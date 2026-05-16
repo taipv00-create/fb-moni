@@ -250,6 +250,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .ai-auto-label { font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; color: #65676b; }
 .ai-auto-label input { accent-color: #8b5cf6; }
 .ai-key-display { font-size: 12px; font-family: monospace; color: #65676b; background: #f3f4f6; padding: 4px 10px; border-radius: 8px; letter-spacing: 1px; }
+.profile-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+.profile-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.profile-field.full { grid-column: 1 / -1; }
+.profile-field label { font-size: 11px; font-weight: 700; color: #65676b; text-transform: uppercase; letter-spacing: .35px; }
+.profile-field input, .profile-field textarea {
+  width: 100%; padding: 8px 10px; border-radius: 10px; border: 1.5px solid #e4e6eb;
+  font-size: 13px; font-family: inherit; outline: none; resize: vertical; background: white;
+}
+.profile-field input:focus, .profile-field textarea:focus { border-color: #8b5cf6; }
+.profile-field textarea { min-height: 58px; line-height: 1.35; }
+.profile-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
+.profile-status { font-size: 12px; color: #65676b; }
+@media (max-width: 560px) { .profile-grid { grid-template-columns: 1fr; } }
 
 /* ── Category badge ── */
 .badge-cat { cursor: default; }
@@ -276,6 +289,24 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .lead-need { font-size: 13px; line-height: 1.4; color: #1f2937; }
 .lead-sub { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: #6b7280; }
 .lead-evidence { margin-top: 5px; font-size: 12px; color: #4b5563; line-height: 1.35; }
+
+/* ── AI reply suggestions ── */
+.reply-wrap { margin: 0 16px 12px; border: 1px solid #bfdbfe; border-radius: 10px; overflow: hidden; background: #f8fbff; }
+.reply-head { padding: 8px 11px; background: #dbeafe; color: #1e40af; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.reply-meta { padding: 9px 11px; border-top: 1px solid #bfdbfe; font-size: 12px; color: #1f2937; display: grid; gap: 5px; }
+.reply-meta b { color: #1e3a8a; }
+.reply-list { display: flex; flex-direction: column; border-top: 1px solid #bfdbfe; }
+.reply-item { padding: 10px 11px; border-top: 1px solid #dbeafe; }
+.reply-item:first-child { border-top: none; }
+.reply-label { font-size: 12px; font-weight: 700; color: #1d4ed8; margin-bottom: 5px; }
+.reply-text { font-size: 13px; line-height: 1.45; color: #111827; white-space: pre-wrap; }
+.reply-actions { margin-top: 7px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn-copy-reply { padding: 5px 11px; border-radius: 8px; border: none; background: #1877f2; color: white; font-size: 12px; font-weight: 600; cursor: pointer; }
+.btn-copy-reply:hover { background: #1464d8; }
+.reply-save-note { font-size: 11px; color: #6b7280; }
+.btn-reply-ai { font-size: 13px; font-weight: 600; color: #1d4ed8; cursor: pointer; border: none; background: none; padding: 0; }
+.btn-reply-ai:hover { text-decoration: underline; }
+.badge-reply { background: #dbeafe; color: #1e40af; cursor: default; }
 
 /* ── Multi-select groups ── */
 .multi-group-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; border: 1.5px solid #e4e6eb; border-radius: 10px; padding: 8px 10px; }
@@ -387,6 +418,40 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     </div>
   </div>
 
+  <!-- Business profile -->
+  <div class="ai-panel">
+    <div class="ai-row">
+      <div class="panel-label">🏪 Bên mình</div>
+      <div style="flex:1"></div>
+      <button class="btn-ai-sm btn-ai-save" onclick="saveBusinessProfile()">💾 Lưu thông tin</button>
+      <span class="profile-status" id="profileStatus"></span>
+    </div>
+    <div class="ai-row">
+      <div class="profile-grid">
+        <div class="profile-field">
+          <label>Tên / thương hiệu</label>
+          <input type="text" id="bizName" placeholder="Tên bên mình">
+        </div>
+        <div class="profile-field">
+          <label>Số điện thoại</label>
+          <input type="text" id="bizPhone" placeholder="SĐT tư vấn">
+        </div>
+        <div class="profile-field full">
+          <label>Địa chỉ</label>
+          <input type="text" id="bizAddress" placeholder="Địa chỉ cửa hàng / văn phòng">
+        </div>
+        <div class="profile-field full">
+          <label>Lý do chọn mình</label>
+          <textarea id="bizWhy" placeholder="Ví dụ: tư vấn nhanh, hàng sẵn, bảo hành rõ ràng, hỗ trợ sau bán..."></textarea>
+        </div>
+        <div class="profile-field full">
+          <label>Ghi chú thêm</label>
+          <textarea id="bizNotes" placeholder="Thông tin sale cần nhớ khi trả lời khách"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Feed -->
   <div class="feed" id="feed">
     <div class="skeleton">
@@ -486,6 +551,38 @@ function renderLeadBlock(postId) {
   </div>`;
 }
 
+function renderReplyBlock(postId) {
+  const item = replySuggestions[postId];
+  if (!item) return '';
+  const conf = pct(item.confidence);
+  const source = item.target_source === 'comment'
+    ? 'Bình luận'
+    : (item.target_source === 'manual_comment' ? 'Comment nhập tay' : 'Bài viết');
+  const replies = (item.suggested_replies || []).map(reply => `
+    <div class="reply-item">
+      <div class="reply-label">${esc(reply.label || 'Mẫu trả lời')}</div>
+      <div class="reply-text">${esc(reply.text || '')}</div>
+      <div class="reply-actions">
+        <button class="btn-copy-reply" data-copy="${esc(reply.text || '')}" onclick="copyReply(this)">Copy</button>
+      </div>
+    </div>
+  `).join('');
+  return `<div class="reply-wrap">
+    <div class="reply-head">
+      <span>🤖 Gợi ý trả lời cho sale</span>
+      <span>${esc(item.intent_label || 'khác')}${conf ? ' · ' + conf : ''}</span>
+    </div>
+    <div class="reply-meta">
+      <div><b>Nguồn:</b> ${source}${item.customer_name ? ' · ' + esc(item.customer_name) : ''}</div>
+      <div><b>Ý khách:</b> ${esc(item.customer_need || 'AI chưa xác định rõ')}</div>
+      ${item.recommended_approach ? `<div><b>Hướng xử lý:</b> ${esc(item.recommended_approach)}</div>` : ''}
+      ${item.storage ? `<div class="reply-save-note">Đã lưu: ${item.storage === 'supabase' ? 'Supabase' : 'local'}</div>` : ''}
+      ${item.warning ? `<div class="reply-save-note">⚠️ ${esc(item.warning)}</div>` : ''}
+    </div>
+    <div class="reply-list">${replies}</div>
+  </div>`;
+}
+
 // ── State ─────────────────────────────────────────────
 let groups     = [];      // string[]  — list of group IDs
 let groupNames = {};      // {id: name}
@@ -494,6 +591,8 @@ let tgIds      = [];
 let pages      = [];
 let allPosts   = [];
 let leads      = {};
+let replySuggestions = {};
+let businessProfile = {};
 
 // ── Render post ────────────────────────────────────────
 function renderPost(post) {
@@ -509,6 +608,7 @@ function renderPost(post) {
   const gid        = post['_group_id'] || '';
   const gName      = (gid && groupNames[gid]) ? groupNames[gid] : gid;
   const postLeads  = leads[post.id] || [];
+  const postReply  = replySuggestions[post.id];
 
   // Attachments
   const atts = (post.attachments || {}).data || [];
@@ -561,7 +661,11 @@ function renderPost(post) {
   const leadBadge = postLeads.length
     ? `<span class="meta-dot"></span><span class="badge badge-lead">🧲 ${postLeads.length} lead</span>`
     : '';
+  const replyBadge = postReply
+    ? `<span class="meta-dot"></span><span class="badge badge-reply">🤖 Có gợi ý</span>`
+    : '';
   const leadHtml = renderLeadBlock(post.id);
+  const replyHtml = renderReplyBlock(post.id);
 
   return `<div class="card">
   <div class="card-header">
@@ -575,6 +679,7 @@ function renderPost(post) {
         ${groupBadge}
         ${catBadge}
         ${leadBadge}
+        ${replyBadge}
       </div>
     </div>
   </div>
@@ -584,6 +689,7 @@ function renderPost(post) {
   </div>` : ''}
   ${attHtml ? `<div class="card-body" style="padding-top:0">${attHtml}</div>` : ''}
   ${leadHtml}
+  ${replyHtml}
   <div class="card-stats">
     <div class="stat"><span class="stat-icon">❤️</span> ${reactions}</div>
     <div class="stat"><span class="stat-icon">💬</span> ${cCount}</div>
@@ -592,7 +698,10 @@ function renderPost(post) {
   ${commentsSection}
   <div class="card-footer">
     <div class="post-link"><a href="${post.permalink_url||'#'}" target="_blank">🔗 Xem trên Facebook</a></div>
-    <button class="btn-write-comment" onclick="toggleCmtBox(this)">✏️ Bình luận</button>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <button class="btn-reply-ai" data-post="${esc(post.id)}" onclick="suggestReply(this)">🤖 Gợi ý trả lời</button>
+      <button class="btn-write-comment" onclick="toggleCmtBox(this)">✏️ Bình luận</button>
+    </div>
   </div>
   <div class="comment-box" data-post="${post.id}" data-group="${gid}">
     <textarea class="comment-textarea" rows="2" placeholder="Nhập bình luận..."></textarea>
@@ -646,6 +755,69 @@ async function sendComment(btn) {
   } catch { result.textContent = '❌ Lỗi kết nối'; }
   btn.disabled = false;
   setTimeout(() => { result.textContent = ''; }, 4000);
+}
+
+function findPost(postId) {
+  return allPosts.find(p => p.id === postId);
+}
+
+async function copyReply(btn) {
+  const text = btn.dataset.copy || '';
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  const prev = btn.textContent;
+  btn.textContent = 'Đã copy';
+  setTimeout(() => { btn.textContent = prev; }, 1600);
+}
+
+async function suggestReply(btn) {
+  const postId = btn.dataset.post;
+  const post = findPost(postId);
+  const st = document.getElementById('aiStatus');
+  if (!post) return;
+
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ AI đang đọc...';
+  st.textContent = 'AI đang đọc bài viết và bình luận...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/ai/suggest-reply', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ post })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      replySuggestions[postId] = Object.assign({}, d.suggestion, {
+        storage: d.storage,
+        warning: d.warning || ''
+      });
+      applyFilter();
+      st.textContent = d.storage === 'supabase'
+        ? '✅ Đã tạo gợi ý và lưu Supabase'
+        : '✅ Đã tạo gợi ý và lưu local';
+      st.style.color = '#16a34a';
+    } else {
+      st.textContent = '❌ ' + (d.error || 'AI chưa tạo được gợi ý');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối server';
+    st.style.color = '#dc2626';
+  }
+  btn.disabled = false;
+  btn.textContent = prev;
+  setTimeout(() => { st.textContent = ''; }, 7000);
 }
 
 // ── Pages ──────────────────────────────────────────────
@@ -1079,21 +1251,87 @@ function catFg(cat) { return (CAT_COLORS[cat] || { fg: '#374151' }).fg; }
 
 async function loadAiConfig() {
   try {
-    const [pRes, cRes, clRes, lRes] = await Promise.all([
+    const [pRes, cRes, clRes, lRes, rsRes] = await Promise.all([
       fetch('/api/ai/providers'),
       fetch('/api/ai/config'),
       fetch('/api/ai/classifications'),
       fetch('/api/ai/leads'),
+      fetch('/api/ai/reply-suggestions'),
     ]);
     aiProviders = await pRes.json();
     aiConfig = await cRes.json();
     classifications = await clRes.json();
     leads = await lRes.json();
+    replySuggestions = await rsRes.json();
     document.getElementById('aiProvider').value = aiConfig.provider || 'gemini';
     document.getElementById('aiAutoClassify').checked = !!aiConfig.auto_classify;
     renderKeyDisplay();
     updateCatFilter();
   } catch {}
+}
+
+function fillBusinessProfileForm(profile) {
+  document.getElementById('bizName').value = profile.business_name || '';
+  document.getElementById('bizPhone').value = profile.phone || '';
+  document.getElementById('bizAddress').value = profile.address || '';
+  document.getElementById('bizWhy').value = profile.why_choose_us || '';
+  document.getElementById('bizNotes').value = profile.extra_notes || '';
+}
+
+async function loadBusinessProfile() {
+  const st = document.getElementById('profileStatus');
+  try {
+    const r = await fetch('/api/business-profile');
+    const d = await r.json();
+    if (d.ok) {
+      businessProfile = d.profile || {};
+      fillBusinessProfileForm(businessProfile);
+      st.textContent = d.storage === 'supabase' ? 'Đã nạp Supabase' : '';
+    }
+  } catch {
+    st.textContent = 'Không tải được thông tin';
+    st.style.color = '#dc2626';
+  }
+}
+
+async function saveBusinessProfile() {
+  const st = document.getElementById('profileStatus');
+  const profile = {
+    business_name: document.getElementById('bizName').value.trim(),
+    phone: document.getElementById('bizPhone').value.trim(),
+    address: document.getElementById('bizAddress').value.trim(),
+    why_choose_us: document.getElementById('bizWhy').value.trim(),
+    extra_notes: document.getElementById('bizNotes').value.trim(),
+  };
+  st.textContent = 'Đang lưu...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/business-profile', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(profile)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      businessProfile = d.profile || profile;
+      fillBusinessProfileForm(businessProfile);
+      st.textContent = d.storage === 'supabase' ? '✅ Đã lưu Supabase' : '✅ Đã lưu local';
+      st.style.color = '#16a34a';
+      if (d.warning) {
+        setTimeout(() => {
+          st.textContent = '⚠️ ' + d.warning;
+          st.style.color = '#b45309';
+        }, 1200);
+      }
+    } else {
+      st.textContent = '❌ ' + (d.error || 'Lỗi lưu');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối';
+    st.style.color = '#dc2626';
+  }
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 5000);
 }
 
 function renderKeyDisplay() {
@@ -1286,6 +1524,7 @@ function updateCatFilter() {
     window._autoOnInit = !!s.auto_refresh;
   } catch { window._autoOnInit = true; }
 
+  await loadBusinessProfile();
   await loadAiConfig();
   await loadGroups();
   await Promise.all(groups.map(loadGroupName));

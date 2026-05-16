@@ -64,6 +64,42 @@ Trả về kết quả dưới dạng JSON array, mỗi phần tử là object c
 Ví dụ: [{{"id":"123","category":"Mua bán"}}]
 CHỈ trả về JSON, không giải thích."""
 
+REPLY_SUGGESTION_PROMPT = """Bạn là trợ lý sale đọc bài viết và bình luận Facebook tiếng Việt để gợi ý câu trả lời.
+
+Mục tiêu:
+- Xác định khách hàng/comment nào đang có nhu cầu rõ nhất.
+- Hiểu ý của khách hàng trong ngữ cảnh bài viết.
+- Viết câu trả lời ngắn, lịch sự, tự nhiên để sale copy paste.
+- Dùng thông tin bên bán nếu có để câu trả lời cụ thể hơn: tên, SĐT, địa chỉ, điểm mạnh/lý do nên chọn.
+- Nếu thiếu thông tin quan trọng, hỏi thêm đúng 1-2 ý cần thiết.
+- Không bịa giá, tồn kho, cam kết, số điện thoại, địa chỉ, chính sách nếu dữ liệu không có.
+- Không nhồi SĐT/địa chỉ vào mọi câu nếu ngữ cảnh chưa cần; ưu tiên tự nhiên, dễ copy paste.
+- Không dùng markdown. Không giải thích ngoài JSON.
+
+Dữ liệu:
+{context}
+
+Trả về JSON object có đúng các trường:
+{{
+  "post_id": "id bài viết",
+  "target_source": "post|comment|manual_comment",
+  "target_source_id": "id nguồn cần trả lời",
+  "customer_name": "tên khách nếu có",
+  "intent_label": "hỏi giá|cần tư vấn|muốn mua|hỏi còn hàng|hỏi địa điểm|khiếu nại|khác",
+  "customer_need": "ý khách hàng, viết 1 câu ngắn",
+  "buying_stage": "new_interest|considering|ready_to_buy|support_needed|unknown",
+  "urgency": "low|medium|high",
+  "confidence": 0.0,
+  "recommended_approach": "hướng xử lý cho sale, 1 câu ngắn",
+  "suggested_replies": [
+    {{ "label": "Ngắn gọn", "text": "câu trả lời để copy paste" }},
+    {{ "label": "Tư vấn", "text": "câu trả lời để copy paste" }},
+    {{ "label": "Chốt lịch/inbox", "text": "câu trả lời để copy paste" }}
+  ]
+}}
+
+CHỈ trả về JSON object."""
+
 
 def normalize_phone(raw: str) -> str:
     digits = re.sub(r'\D', '', raw or '')
@@ -181,6 +217,21 @@ class AIClassifier:
         self.last_error = '; '.join(dict.fromkeys(errors))[:500] if errors else ''
         return {pid: self._dedupe_leads(items) for pid, items in results.items()}
 
+    def suggest_reply(self, post: Dict, manual_comment: str = '', business_profile: Dict = None) -> Dict:
+        """Suggest copy-paste sales replies for a post/comment context."""
+        if not post or not self.api_key:
+            return {}
+        context, source_meta = self._format_reply_context(post, manual_comment, business_profile or {})
+        prompt = REPLY_SUGGESTION_PROMPT.format(context=context)
+        try:
+            resp = self._call_api(prompt)
+            self.last_error = ''
+            return self._parse_reply_response(resp, post, source_meta)
+        except Exception as e:
+            self.last_error = str(e)
+            print(f'AI reply suggestion error: {e}')
+            return {}
+
     def _format_lead_posts(self, posts: List[Dict]) -> tuple[str, Dict[str, Dict]]:
         blocks = []
         source_meta: Dict[str, Dict] = {}
@@ -228,6 +279,67 @@ class AIClassifier:
                 ])
             blocks.append('\n'.join(lines))
         return '\n\n---\n\n'.join(blocks), source_meta
+
+    def _format_reply_context(self, post: Dict, manual_comment: str = '', business_profile: Dict = None) -> tuple[str, Dict[str, Dict]]:
+        pid = str(post.get('id') or '')
+        gid = str(post.get('_group_id') or '')
+        author = (post.get('from') or {}).get('name', 'Ẩn danh')
+        text = post.get('message', '') or ''
+        business_profile = business_profile or {}
+        source_meta: Dict[str, Dict] = {
+            pid: {
+                'post_id': pid,
+                'source': 'post',
+                'name': author,
+            }
+        }
+        lines = [
+            f'POST_ID: {pid}',
+            f'GROUP_ID: {gid}',
+            f'POST_AUTHOR: {author}',
+            f'POST_TEXT: {_compact_text(text, 1500) or "[Không có nội dung]"}',
+            'SELLER_PROFILE:',
+            f'BUSINESS_NAME: {_compact_text(str(business_profile.get("business_name") or ""), 120)}',
+            f'PHONE: {_compact_text(str(business_profile.get("phone") or ""), 80)}',
+            f'ADDRESS: {_compact_text(str(business_profile.get("address") or ""), 180)}',
+            f'WHY_CHOOSE_US: {_compact_text(str(business_profile.get("why_choose_us") or ""), 600)}',
+            f'EXTRA_NOTES: {_compact_text(str(business_profile.get("extra_notes") or ""), 400)}',
+        ]
+
+        if manual_comment:
+            source_id = f'{pid}:manual_comment'
+            source_meta[source_id] = {
+                'post_id': pid,
+                'source': 'manual_comment',
+                'name': 'Khách hàng',
+            }
+            lines.extend([
+                'PRIMARY_COMMENT_TO_REPLY:',
+                f'SOURCE_ID: {source_id}',
+                'AUTHOR: Khách hàng',
+                f'TEXT: {_compact_text(manual_comment, 700)}',
+            ])
+
+        comments = ((post.get('comments') or {}).get('data') or [])[:60]
+        lines.append('COMMENTS:')
+        if not comments:
+            lines.append('- [Không có bình luận được tải]')
+        for idx, comment in enumerate(comments, 1):
+            cid = str(comment.get('id') or f'{pid}:comment:{idx}')
+            cname = (comment.get('from') or {}).get('name', 'Ẩn danh')
+            ctext = comment.get('message', '') or ''
+            source_meta[cid] = {
+                'post_id': pid,
+                'source': 'comment',
+                'name': cname,
+            }
+            lines.extend([
+                f'- COMMENT {idx}',
+                f'  SOURCE_ID: {cid}',
+                f'  AUTHOR: {cname}',
+                f'  TEXT: {_compact_text(ctext, 650) or "[Không có nội dung]"}',
+            ])
+        return '\n'.join(lines), source_meta
 
     def _parse_leads_response(self, text: str, source_meta: Dict[str, Dict]) -> List[Dict]:
         payload = _load_json_payload(text)
@@ -280,6 +392,44 @@ class AIClassifier:
             seen.add(key)
             unique.append(lead)
         return unique
+
+    def _parse_reply_response(self, text: str, post: Dict, source_meta: Dict[str, Dict]) -> Dict:
+        payload = _load_json_payload(text)
+        if not isinstance(payload, dict):
+            return {}
+
+        pid = str(post.get('id') or payload.get('post_id') or '')
+        source_id = str(payload.get('target_source_id') or pid).strip()
+        meta = source_meta.get(source_id) or source_meta.get(pid) or {}
+        replies = payload.get('suggested_replies') or []
+        clean_replies = []
+        if isinstance(replies, list):
+            for idx, item in enumerate(replies[:4], 1):
+                if isinstance(item, dict):
+                    label = _compact_text(str(item.get('label') or f'Mẫu {idx}'), 40)
+                    reply_text = _compact_text(str(item.get('text') or ''), 700)
+                else:
+                    label = f'Mẫu {idx}'
+                    reply_text = _compact_text(str(item), 700)
+                if reply_text:
+                    clean_replies.append({'label': label, 'text': reply_text})
+
+        if not clean_replies:
+            return {}
+
+        return {
+            'post_id': pid,
+            'target_source': str(payload.get('target_source') or meta.get('source') or 'post')[:30],
+            'target_source_id': source_id or pid,
+            'customer_name': _compact_text(str(payload.get('customer_name') or meta.get('name') or 'Khách hàng'), 80),
+            'intent_label': _compact_text(str(payload.get('intent_label') or 'khác'), 80),
+            'customer_need': _compact_text(str(payload.get('customer_need') or ''), 220),
+            'buying_stage': str(payload.get('buying_stage') or 'unknown')[:40],
+            'urgency': str(payload.get('urgency') or 'low')[:20],
+            'confidence': _as_float(payload.get('confidence'), 0.5),
+            'recommended_approach': _compact_text(str(payload.get('recommended_approach') or ''), 260),
+            'suggested_replies': clean_replies,
+        }
 
     def test_connection(self) -> Dict:
         try:

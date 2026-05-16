@@ -2,6 +2,7 @@ import os
 import json
 import threading
 import requests as _req
+from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 
 from core.group_api import FacebookGroupAPI, load_token, load_cookie, refresh_token
@@ -9,6 +10,7 @@ from core.ai_classifier import AIClassifier, DEFAULT_MODEL, DEFAULT_API_KEY, DEF
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
+load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 SEEN_FILE = os.path.join(DATA_DIR, 'seen_posts.json')
 TG_CONFIG_FILE = os.path.join(DATA_DIR, 'telegram_config.json')
@@ -17,10 +19,20 @@ SETTINGS_FILE = os.path.join(DATA_DIR, 'settings.json')
 AI_CONFIG_FILE = os.path.join(DATA_DIR, 'ai_config.json')
 CLASSIFICATIONS_FILE = os.path.join(DATA_DIR, 'classifications.json')
 LEADS_FILE = os.path.join(DATA_DIR, 'leads.json')
+REPLY_SUGGESTIONS_FILE = os.path.join(DATA_DIR, 'reply_suggestions.json')
+BUSINESS_PROFILE_FILE = os.path.join(DATA_DIR, 'business_profile.json')
 
 BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '8724375632:AAEgyz4yRPivDYWGXesTaJHhdqWYIraSoT8')
 DEFAULT_GROUP = os.environ.get('DEFAULT_GROUP', '3809441172650624')
 PORT = int(os.environ.get('PORT', 5000))
+SUPABASE_URL = os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL', '')
+SUPABASE_KEY = (
+    os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
+    or os.environ.get('SUPABASE_PUBLISHABLE_KEY')
+    or os.environ.get('VITE_SUPABASE_PUBLISHABLE_KEY', '')
+)
+SUPABASE_REPLY_TABLE = os.environ.get('SUPABASE_REPLY_TABLE', 'ai_reply_suggestions')
+SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_profiles')
 
 app = Flask(__name__, template_folder='views')
 
@@ -34,10 +46,22 @@ _settings: dict = {}    # {auto_refresh, interval}
 _ai_config: dict = {}   # {provider, model, keys, auto_classify, categories}
 _classifications: dict = {}  # {post_id: category}
 _leads: dict = {}       # {post_id: [lead]}
+_reply_suggestions: dict = {}  # {post_id: latest suggestion}
+_business_profile: dict = {}  # {business_name, phone, address, why_choose_us, extra_notes}
+
+
+def _default_business_profile() -> dict:
+    return {
+        'business_name': '',
+        'phone': '',
+        'address': '',
+        'why_choose_us': '',
+        'extra_notes': '',
+    }
 
 
 def _load_state():
-    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads
+    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _reply_suggestions, _business_profile
     os.makedirs(DATA_DIR, exist_ok=True)
     try:
         _seen_ids = set(json.load(open(SEEN_FILE)))
@@ -74,6 +98,15 @@ def _load_state():
         _leads = json.load(open(LEADS_FILE))
     except Exception:
         _leads = {}
+    try:
+        _reply_suggestions = json.load(open(REPLY_SUGGESTIONS_FILE))
+    except Exception:
+        _reply_suggestions = {}
+    try:
+        loaded_profile = json.load(open(BUSINESS_PROFILE_FILE))
+        _business_profile = {**_default_business_profile(), **loaded_profile}
+    except Exception:
+        _business_profile = _default_business_profile()
 
 
 def _save_seen():
@@ -109,6 +142,130 @@ def _save_classifications():
 def _save_leads():
     with open(LEADS_FILE, 'w') as f:
         json.dump(_leads, f, ensure_ascii=False)
+
+
+def _save_reply_suggestions():
+    with open(REPLY_SUGGESTIONS_FILE, 'w') as f:
+        json.dump(_reply_suggestions, f, ensure_ascii=False)
+
+
+def _clean_business_profile(body: dict) -> dict:
+    current = {**_default_business_profile(), **(_business_profile or {})}
+    limits = {
+        'business_name': 120,
+        'phone': 60,
+        'address': 240,
+        'why_choose_us': 1000,
+        'extra_notes': 800,
+    }
+    for key, limit in limits.items():
+        if key in body:
+            current[key] = str(body.get(key) or '').strip()[:limit]
+    return current
+
+
+def _save_business_profile():
+    with open(BUSINESS_PROFILE_FILE, 'w') as f:
+        json.dump(_business_profile, f, ensure_ascii=False)
+
+
+def _load_business_profile_from_supabase() -> tuple[dict, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return {}, 'Chưa cấu hình Supabase'
+    try:
+        resp = _req.get(
+            f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_PROFILE_TABLE}",
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+            },
+            params={'id': 'eq.default', 'select': '*', 'limit': '1'},
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            return {}, resp.text[:300]
+        rows = resp.json()
+        if not rows:
+            return {}, ''
+        row = rows[0]
+        return {
+            'business_name': row.get('business_name') or '',
+            'phone': row.get('phone') or '',
+            'address': row.get('address') or '',
+            'why_choose_us': row.get('why_choose_us') or '',
+            'extra_notes': row.get('extra_notes') or '',
+        }, ''
+    except Exception as e:
+        return {}, str(e)[:300]
+
+
+def _save_business_profile_to_supabase(profile: dict) -> tuple[bool, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False, 'Chưa cấu hình Supabase'
+    payload = {
+        'id': 'default',
+        'business_name': profile.get('business_name', ''),
+        'phone': profile.get('phone', ''),
+        'address': profile.get('address', ''),
+        'why_choose_us': profile.get('why_choose_us', ''),
+        'extra_notes': profile.get('extra_notes', ''),
+    }
+    try:
+        resp = _req.post(
+            f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_PROFILE_TABLE}",
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+                'Content-Type': 'application/json',
+                'Prefer': 'resolution=merge-duplicates,return=representation',
+            },
+            params={'on_conflict': 'id'},
+            json=payload,
+            timeout=20,
+        )
+        if resp.status_code in (200, 201):
+            return True, ''
+        return False, (resp.json().get('message') if resp.headers.get('content-type', '').startswith('application/json') else resp.text)[:300]
+    except Exception as e:
+        return False, str(e)[:300]
+
+
+def _save_reply_suggestion_to_supabase(suggestion: dict) -> tuple[bool, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False, 'Chưa cấu hình Supabase'
+    payload = {
+        'post_id': suggestion.get('post_id', ''),
+        'group_id': suggestion.get('group_id', ''),
+        'post_url': suggestion.get('post_url', ''),
+        'target_source': suggestion.get('target_source', ''),
+        'target_source_id': suggestion.get('target_source_id', ''),
+        'customer_name': suggestion.get('customer_name', ''),
+        'intent_label': suggestion.get('intent_label', ''),
+        'customer_need': suggestion.get('customer_need', ''),
+        'buying_stage': suggestion.get('buying_stage', ''),
+        'urgency': suggestion.get('urgency', ''),
+        'confidence': suggestion.get('confidence', 0),
+        'recommended_approach': suggestion.get('recommended_approach', ''),
+        'suggested_replies': suggestion.get('suggested_replies', []),
+        'raw_ai': suggestion,
+    }
+    try:
+        resp = _req.post(
+            f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_REPLY_TABLE}",
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal',
+            },
+            json=payload,
+            timeout=20,
+        )
+        if resp.status_code in (200, 201, 204):
+            return True, ''
+        return False, (resp.json().get('message') if resp.headers.get('content-type', '').startswith('application/json') else resp.text)[:300]
+    except Exception as e:
+        return False, str(e)[:300]
 
 
 def _get_classifier() -> AIClassifier:
@@ -366,6 +523,38 @@ def settings_save():
     return jsonify({'ok': True, 'settings': _settings})
 
 
+@app.route('/api/business-profile', methods=['GET'])
+def business_profile_get():
+    global _business_profile
+    storage = 'local'
+    warning = ''
+    if not any((_business_profile or {}).values()):
+        remote_profile, warning = _load_business_profile_from_supabase()
+        if remote_profile:
+            _business_profile = {**_default_business_profile(), **remote_profile}
+            _save_business_profile()
+            storage = 'supabase'
+    payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
+    if warning:
+        payload['warning'] = warning
+    return jsonify(payload)
+
+
+@app.route('/api/business-profile', methods=['POST'])
+def business_profile_save():
+    global _business_profile
+    body = request.get_json() or {}
+    _business_profile = _clean_business_profile(body)
+    _save_business_profile()
+
+    supabase_ok, supabase_error = _save_business_profile_to_supabase(_business_profile)
+    storage = 'supabase' if supabase_ok else 'local'
+    payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
+    if supabase_error:
+        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
+    return jsonify(payload)
+
+
 @app.route('/api/telegram/test/<chat_id>', methods=['POST'])
 def tg_test(chat_id):
     try:
@@ -466,6 +655,45 @@ def ai_classifications_get():
 @app.route('/api/ai/leads', methods=['GET'])
 def ai_leads_get():
     return jsonify(_leads)
+
+
+@app.route('/api/ai/reply-suggestions', methods=['GET'])
+def ai_reply_suggestions_get():
+    return jsonify(_reply_suggestions)
+
+
+@app.route('/api/ai/suggest-reply', methods=['POST'])
+def ai_suggest_reply():
+    global _reply_suggestions
+    body = request.get_json() or {}
+    post = body.get('post') or {}
+    manual_comment = (body.get('comment') or '').strip()
+    if not post:
+        return jsonify({'ok': False, 'error': 'Không có bài viết'}), 400
+
+    classifier = _get_classifier()
+    if not classifier.api_key:
+        return jsonify({'ok': False, 'error': 'Chưa cấu hình API key'})
+
+    suggestion = classifier.suggest_reply(post, manual_comment, _business_profile)
+    if classifier.last_error and not suggestion:
+        return jsonify({'ok': False, 'error': classifier.last_error}), 502
+    if not suggestion:
+        return jsonify({'ok': False, 'error': 'AI chưa tạo được gợi ý phù hợp'}), 502
+
+    pid = suggestion.get('post_id') or post.get('id')
+    suggestion['post_id'] = pid
+    suggestion['group_id'] = post.get('_group_id', '')
+    suggestion['post_url'] = post.get('permalink_url', '')
+    _reply_suggestions[pid] = suggestion
+    _save_reply_suggestions()
+
+    supabase_ok, supabase_error = _save_reply_suggestion_to_supabase(suggestion)
+    storage = 'supabase' if supabase_ok else 'local'
+    payload = {'ok': True, 'suggestion': suggestion, 'storage': storage}
+    if supabase_error:
+        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
+    return jsonify(payload)
 
 
 @app.route('/api/ai/extract-leads', methods=['POST'])
