@@ -268,11 +268,21 @@ def _save_reply_suggestion_to_supabase(suggestion: dict) -> tuple[bool, str]:
         return False, str(e)[:300]
 
 
+def _get_ai_key(provider: str) -> str:
+    stored_key = (_ai_config.get('keys') or {}).get(provider, '')
+    env_keys = {
+        'gemini': 'GEMINI_API_KEY',
+        'openai': 'OPENAI_API_KEY',
+        'claude': 'CLAUDE_API_KEY',
+    }
+    return stored_key or os.environ.get(env_keys.get(provider, ''), '') or DEFAULT_API_KEY
+
+
 def _get_classifier() -> AIClassifier:
     provider = _ai_config.get('provider', 'gemini')
     default_model = PROVIDERS.get(provider, {}).get('default_model', DEFAULT_MODEL)
     model = _ai_config.get('model', default_model) or default_model
-    api_key = _ai_config.get('keys', {}).get(provider, '') or DEFAULT_API_KEY
+    api_key = _get_ai_key(provider)
     categories = _ai_config.get('categories', DEFAULT_CATEGORIES)
     return AIClassifier(provider, model, api_key, categories)
 
