@@ -565,6 +565,35 @@ def business_profile_save():
     return jsonify(payload)
 
 
+@app.route('/api/business-profile/generate-text', methods=['POST'])
+def business_profile_generate_text():
+    global _business_profile
+    body = request.get_json() or {}
+    profile = _clean_business_profile(body)
+    if not any(profile.values()):
+        return jsonify({'ok': False, 'error': 'Nhập ít nhất một thông tin trước khi tạo văn bản'}), 400
+
+    classifier = _get_classifier()
+    if not classifier.api_key:
+        return jsonify({'ok': False, 'error': 'Chưa cấu hình API key'})
+
+    generated = classifier.generate_business_text(profile)
+    if classifier.last_error and not generated:
+        return jsonify({'ok': False, 'error': classifier.last_error}), 502
+    if not generated:
+        return jsonify({'ok': False, 'error': 'AI chưa tạo được văn bản phù hợp'}), 502
+
+    _business_profile = _clean_business_profile(generated)
+    _save_business_profile()
+
+    supabase_ok, supabase_error = _save_business_profile_to_supabase(_business_profile)
+    storage = 'supabase' if supabase_ok else 'local'
+    payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
+    if supabase_error:
+        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
+    return jsonify(payload)
+
+
 @app.route('/api/telegram/test/<chat_id>', methods=['POST'])
 def tg_test(chat_id):
     try:

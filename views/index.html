@@ -423,6 +423,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     <div class="ai-row">
       <div class="panel-label">🏪 Bên mình</div>
       <div style="flex:1"></div>
+      <button class="btn-ai-sm btn-ai-test" id="profileGenBtn" onclick="generateBusinessText()">✨ AI tạo văn bản</button>
       <button class="btn-ai-sm btn-ai-save" onclick="saveBusinessProfile()">💾 Lưu thông tin</button>
       <span class="profile-status" id="profileStatus"></span>
     </div>
@@ -1278,6 +1279,16 @@ function fillBusinessProfileForm(profile) {
   document.getElementById('bizNotes').value = profile.extra_notes || '';
 }
 
+function getBusinessProfileForm() {
+  return {
+    business_name: document.getElementById('bizName').value.trim(),
+    phone: document.getElementById('bizPhone').value.trim(),
+    address: document.getElementById('bizAddress').value.trim(),
+    why_choose_us: document.getElementById('bizWhy').value.trim(),
+    extra_notes: document.getElementById('bizNotes').value.trim(),
+  };
+}
+
 async function loadBusinessProfile() {
   const st = document.getElementById('profileStatus');
   try {
@@ -1296,13 +1307,7 @@ async function loadBusinessProfile() {
 
 async function saveBusinessProfile() {
   const st = document.getElementById('profileStatus');
-  const profile = {
-    business_name: document.getElementById('bizName').value.trim(),
-    phone: document.getElementById('bizPhone').value.trim(),
-    address: document.getElementById('bizAddress').value.trim(),
-    why_choose_us: document.getElementById('bizWhy').value.trim(),
-    extra_notes: document.getElementById('bizNotes').value.trim(),
-  };
+  const profile = getBusinessProfileForm();
   st.textContent = 'Đang lưu...';
   st.style.color = '#65676b';
   try {
@@ -1332,6 +1337,52 @@ async function saveBusinessProfile() {
     st.style.color = '#dc2626';
   }
   setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 5000);
+}
+
+async function generateBusinessText() {
+  const st = document.getElementById('profileStatus');
+  const btn = document.getElementById('profileGenBtn');
+  const profile = getBusinessProfileForm();
+  if (!Object.values(profile).some(Boolean)) {
+    st.textContent = 'Nhập thông tin trước khi tạo';
+    st.style.color = '#dc2626';
+    return;
+  }
+
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ AI đang viết...';
+  st.textContent = 'AI đang tạo văn bản...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/business-profile/generate-text', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(profile)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      businessProfile = d.profile || profile;
+      fillBusinessProfileForm(businessProfile);
+      st.textContent = d.storage === 'supabase' ? '✅ AI đã tạo và lưu Supabase' : '✅ AI đã tạo và lưu local';
+      st.style.color = '#16a34a';
+      if (d.warning) {
+        setTimeout(() => {
+          st.textContent = '⚠️ ' + d.warning;
+          st.style.color = '#b45309';
+        }, 1200);
+      }
+    } else {
+      st.textContent = '❌ ' + (d.error || 'AI chưa tạo được văn bản');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối';
+    st.style.color = '#dc2626';
+  }
+  btn.disabled = false;
+  btn.textContent = prev;
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 7000);
 }
 
 function renderKeyDisplay() {

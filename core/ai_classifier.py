@@ -100,6 +100,35 @@ Trả về JSON object có đúng các trường:
 
 CHỈ trả về JSON object."""
 
+BUSINESS_TEXT_PROMPT = """Bạn là copywriter bán hàng tiếng Việt. Nhiệm vụ của bạn là viết lại thông tin bên bán thành văn bản rõ ràng để AI sale dùng khi trả lời khách.
+
+Ngữ cảnh:
+- Người dùng có thể chỉ nhập thông tin thô, rời rạc.
+- Viết tự nhiên, đáng tin, không phóng đại.
+- Không bịa số điện thoại, địa chỉ, giá, bảo hành, cam kết, chứng nhận nếu đầu vào không có.
+- Nếu tên/thương hiệu, SĐT, địa chỉ đã có thì giữ nguyên.
+- "why_choose_us" nên là đoạn văn hoặc các ý ngắn nêu lý do nên chọn bên mình, dùng được trực tiếp trong trả lời khách.
+- "extra_notes" là ghi chú nội bộ cho sale/AI: cách xưng hô, điểm cần nhấn, điều không được nói, cách chốt inbox/cuộc gọi.
+- Không dùng markdown. Không giải thích ngoài JSON.
+
+Thông tin đầu vào:
+BUSINESS_NAME: {business_name}
+PHONE: {phone}
+ADDRESS: {address}
+RAW_WHY_CHOOSE_US: {why_choose_us}
+RAW_EXTRA_NOTES: {extra_notes}
+
+Trả về JSON object có đúng các trường:
+{{
+  "business_name": "giữ hoặc chỉnh rất nhẹ tên/thương hiệu",
+  "phone": "giữ số điện thoại nếu có",
+  "address": "giữ địa chỉ nếu có",
+  "why_choose_us": "văn bản bán hàng đã viết lại",
+  "extra_notes": "ghi chú nội bộ cho sale/AI"
+}}
+
+CHỈ trả về JSON object."""
+
 
 def normalize_phone(raw: str) -> str:
     digits = re.sub(r'\D', '', raw or '')
@@ -230,6 +259,26 @@ class AIClassifier:
         except Exception as e:
             self.last_error = str(e)
             print(f'AI reply suggestion error: {e}')
+            return {}
+
+    def generate_business_text(self, profile: Dict) -> Dict:
+        """Rewrite rough business profile fields into sales-ready text."""
+        if not self.api_key:
+            return {}
+        prompt = BUSINESS_TEXT_PROMPT.format(
+            business_name=_compact_text(str(profile.get('business_name') or ''), 160),
+            phone=_compact_text(str(profile.get('phone') or ''), 80),
+            address=_compact_text(str(profile.get('address') or ''), 240),
+            why_choose_us=_compact_text(str(profile.get('why_choose_us') or ''), 1000),
+            extra_notes=_compact_text(str(profile.get('extra_notes') or ''), 800),
+        )
+        try:
+            resp = self._call_api(prompt)
+            self.last_error = ''
+            return self._parse_business_text_response(resp, profile)
+        except Exception as e:
+            self.last_error = str(e)
+            print(f'AI business text error: {e}')
             return {}
 
     def _format_lead_posts(self, posts: List[Dict]) -> tuple[str, Dict[str, Dict]]:
@@ -430,6 +479,22 @@ class AIClassifier:
             'recommended_approach': _compact_text(str(payload.get('recommended_approach') or ''), 260),
             'suggested_replies': clean_replies,
         }
+
+    def _parse_business_text_response(self, text: str, original: Dict) -> Dict:
+        payload = _load_json_payload(text)
+        if not isinstance(payload, dict):
+            return {}
+
+        profile = {
+            'business_name': _compact_text(str(payload.get('business_name') or original.get('business_name') or ''), 120),
+            'phone': _compact_text(str(payload.get('phone') or original.get('phone') or ''), 60),
+            'address': _compact_text(str(payload.get('address') or original.get('address') or ''), 240),
+            'why_choose_us': _compact_text(str(payload.get('why_choose_us') or original.get('why_choose_us') or ''), 1000),
+            'extra_notes': _compact_text(str(payload.get('extra_notes') or original.get('extra_notes') or ''), 800),
+        }
+        if not profile['why_choose_us'] and not profile['extra_notes']:
+            return {}
+        return profile
 
     def test_connection(self) -> Dict:
         try:
