@@ -7,3 +7,6 @@ data/business_profile.json
 data/reply_suggestions.json
 data/ai_config.json
 .env (1)
+data/staff_cookies.json
+data/staff_tokens/
+data/comment_logs.json

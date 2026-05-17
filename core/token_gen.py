@@ -9,10 +9,11 @@ TOKEN_FILE = os.path.join(BASE_DIR, 'data', 'token_success.txt')
 
 
 class FacebookTokenGenerator:
-    def __init__(self, client_id, cookie):
+    def __init__(self, client_id, cookie, token_file=None):
         self.client_id = client_id
         self.cookie_raw = re.sub(r'\s+', '', cookie, flags=re.UNICODE)
         self.cookies = self._parse_cookies()
+        self.token_file = token_file or TOKEN_FILE
 
     def _parse_cookies(self):
         result = {}
@@ -134,7 +135,8 @@ class FacebookTokenGenerator:
             if not token:
                 raise ValueError('Không tìm thấy access_token trong fb-ar')
 
-            with open(TOKEN_FILE, 'a', encoding='utf-8') as f:
+            os.makedirs(os.path.dirname(self.token_file), exist_ok=True)
+            with open(self.token_file, 'a', encoding='utf-8') as f:
                 f.write(f'{c_user}|{token}\n')
             return token
 

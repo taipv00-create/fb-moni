@@ -1,16 +1,16 @@
 import os
 import json
 import threading
+import re
+import uuid
+import hashlib
+import secrets
 import requests as _req
+from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, session
 from flask_cors import CORS
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except Exception:
-    pass
 
 from core.group_api import FacebookGroupAPI, load_token, load_cookie, refresh_token
 from core.ai_classifier import AIClassifier, DEFAULT_MODEL, DEFAULT_API_KEY, DEFAULT_CATEGORIES, PROVIDERS
@@ -29,6 +29,9 @@ CLASSIFICATIONS_FILE = os.path.join(DATA_DIR, 'classifications.json')
 LEADS_FILE = os.path.join(DATA_DIR, 'leads.json')
 REPLY_SUGGESTIONS_FILE = os.path.join(DATA_DIR, 'reply_suggestions.json')
 BUSINESS_PROFILE_FILE = os.path.join(DATA_DIR, 'business_profile.json')
+STAFF_COOKIES_FILE = os.path.join(DATA_DIR, 'staff_cookies.json')
+STAFF_TOKEN_DIR = os.path.join(DATA_DIR, 'staff_tokens')
+COMMENT_LOGS_FILE = os.path.join(DATA_DIR, 'comment_logs.json')
 
 BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '8724375632:AAEgyz4yRPivDYWGXesTaJHhdqWYIraSoT8')
 DEFAULT_GROUP = os.environ.get('DEFAULT_GROUP', '3809441172650624')
@@ -43,8 +46,11 @@ SUPABASE_KEY = (
 )
 SUPABASE_REPLY_TABLE = os.environ.get('SUPABASE_REPLY_TABLE', 'ai_reply_suggestions')
 SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_profiles')
+SUPABASE_COMMENT_LOG_TABLE = os.environ.get('SUPABASE_COMMENT_LOG_TABLE', 'comment_logs')
+APP_TIMEZONE = os.environ.get('APP_TIMEZONE', 'Asia/Ho_Chi_Minh')
 
 app = Flask(__name__, template_folder='views')
+app.secret_key = os.environ.get('APP_SECRET_KEY', 'fb-moni-local-dev-secret-change-me')
 
 _cors_origins = [
     o.strip()
@@ -68,6 +74,8 @@ _classifications: dict = {}  # {post_id: category}
 _leads: dict = {}       # {post_id: [lead]}
 _reply_suggestions: dict = {}  # {post_id: latest suggestion}
 _business_profile: dict = {}  # {business_name, phone, address, why_choose_us, extra_notes}
+_staff_cookies: dict = {}  # {active_staff_id, staff: [{id, name, cookie, enabled}]}
+_comment_logs: list = []
 
 
 def _default_business_profile() -> dict:
@@ -109,13 +117,31 @@ def _default_ai_config():
     }
 
 
+def _default_staff_cookies() -> dict:
+    return {'active_staff_id': '', 'staff': []}
+
+
+def _hash_password(password: str, salt: str = None) -> tuple[str, str]:
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 120000)
+    return salt, digest.hex()
+
+
+def _verify_password(password: str, salt: str, digest: str) -> bool:
+    if not password or not salt or not digest:
+        return False
+    _, candidate = _hash_password(password, salt)
+    return secrets.compare_digest(candidate, digest)
+
+
 def _load_state():
-    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _reply_suggestions, _business_profile
+    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs
     os.makedirs(DATA_DIR, exist_ok=True)
 
+    loaded_from_supabase = False
     if USE_SUPABASE:
         try:
-            _seen_ids = sb.list_seen_post_ids()
+            _seen_ids = set(sb.list_seen_post_ids())
             _tg_chat_ids = sb.list_chat_ids() or ['7129448686']
             _groups = sb.list_groups() or [{'id': DEFAULT_GROUP, 'name': ''}]
             _settings = sb.kv_get('settings', None) or {'auto_refresh': True, 'interval': 5}
@@ -129,21 +155,44 @@ def _load_state():
             if profile_sb:
                 _business_profile = {**_business_profile, **profile_sb}
             print('[supabase] state loaded from Supabase')
-            return
+            loaded_from_supabase = True
         except Exception as e:
             print(f'[supabase] load failed, fallback file: {e}')
 
-    _seen_ids = set(_read_json(SEEN_FILE, []))
-    cfg = _read_json(TG_CONFIG_FILE, {})
-    _tg_chat_ids = cfg.get('chat_ids') or ([cfg['chat_id']] if cfg.get('chat_id') else ['7129448686'])
-    _groups = _read_json(GROUPS_FILE, [{'id': DEFAULT_GROUP, 'name': ''}])
-    _settings = _read_json(SETTINGS_FILE, {'auto_refresh': True, 'interval': 5})
-    _ai_config = _read_json(AI_CONFIG_FILE, _default_ai_config())
-    _classifications = _read_json(CLASSIFICATIONS_FILE, {})
-    _leads = _read_json(LEADS_FILE, {})
-    _reply_suggestions = _read_json(REPLY_SUGGESTIONS_FILE, {})
-    loaded_profile = _read_json(BUSINESS_PROFILE_FILE, {})
-    _business_profile = {**_default_business_profile(), **loaded_profile}
+    if not loaded_from_supabase:
+        _seen_ids = set(_read_json(SEEN_FILE, []))
+        cfg = _read_json(TG_CONFIG_FILE, {})
+        _tg_chat_ids = cfg.get('chat_ids') or ([cfg['chat_id']] if cfg.get('chat_id') else ['7129448686'])
+        _groups = _read_json(GROUPS_FILE, [{'id': DEFAULT_GROUP, 'name': ''}])
+        _settings = _read_json(SETTINGS_FILE, {'auto_refresh': True, 'interval': 5})
+        _ai_config = _read_json(AI_CONFIG_FILE, _default_ai_config())
+        _classifications = _read_json(CLASSIFICATIONS_FILE, {})
+        _leads = _read_json(LEADS_FILE, {})
+        _reply_suggestions = _read_json(REPLY_SUGGESTIONS_FILE, {})
+        loaded_profile = _read_json(BUSINESS_PROFILE_FILE, {})
+        _business_profile = {**_default_business_profile(), **loaded_profile}
+
+    loaded_staff = _read_json(STAFF_COOKIES_FILE, _default_staff_cookies())
+    _staff_cookies = {**_default_staff_cookies(), **loaded_staff}
+    if not isinstance(_staff_cookies.get('staff'), list):
+        _staff_cookies['staff'] = []
+    changed_staff = False
+    for item in _staff_cookies['staff']:
+        if 'role' not in item:
+            item['role'] = 'staff'
+            changed_staff = True
+        if 'username' not in item:
+            item['username'] = re.sub(r'\W+', '_', (item.get('name') or item.get('id') or '')).strip('_').lower()
+            changed_staff = True
+    if _staff_cookies['staff'] and not any(item.get('role') == 'admin' for item in _staff_cookies['staff']):
+        _staff_cookies['staff'][0]['role'] = 'admin'
+        changed_staff = True
+    if changed_staff:
+        _save_staff_cookies()
+
+    _comment_logs = _read_json(COMMENT_LOGS_FILE, [])
+    if not isinstance(_comment_logs, list):
+        _comment_logs = []
 
 
 def _save_seen(new_posts=None):
@@ -202,6 +251,102 @@ def _save_leads():
 def _save_reply_suggestions():
     with open(REPLY_SUGGESTIONS_FILE, 'w', encoding='utf-8') as f:
         json.dump(_reply_suggestions, f, ensure_ascii=False)
+
+
+def _save_staff_cookies():
+    with open(STAFF_COOKIES_FILE, 'w') as f:
+        json.dump(_staff_cookies, f, ensure_ascii=False)
+
+
+def _save_comment_logs():
+    with open(COMMENT_LOGS_FILE, 'w') as f:
+        json.dump(_comment_logs[-1000:], f, ensure_ascii=False)
+
+
+def _extract_cookie_user(cookie: str) -> str:
+    match = re.search(r'(?:^|;\s*)c_user=([^;]+)', cookie or '')
+    return match.group(1) if match else ''
+
+
+def _mask_cookie(cookie: str) -> str:
+    if not cookie:
+        return ''
+    c_user = _extract_cookie_user(cookie)
+    if c_user:
+        return f'c_user={c_user}; ...'
+    return cookie[:8] + '...' + cookie[-6:] if len(cookie) > 18 else '***'
+
+
+def _public_staff_cookie(row: dict) -> dict:
+    cookie = row.get('cookie', '')
+    return {
+        'id': row.get('id', ''),
+        'name': row.get('name', ''),
+        'username': row.get('username', ''),
+        'role': row.get('role', 'staff'),
+        'cookie_masked': _mask_cookie(cookie),
+        'facebook_user_id': _extract_cookie_user(cookie),
+        'enabled': bool(row.get('enabled', True)),
+        'created_at': row.get('created_at', ''),
+        'updated_at': row.get('updated_at', ''),
+    }
+
+
+def _staff_accounts() -> list:
+    return _staff_cookies.get('staff') or []
+
+
+def _setup_required() -> bool:
+    return not any(item.get('enabled', True) and item.get('username') and item.get('password_hash') for item in _staff_accounts())
+
+
+def _current_staff() -> dict:
+    staff_id = session.get('staff_id', '')
+    if not staff_id:
+        return {}
+    return next((item for item in _staff_accounts() if item.get('id') == staff_id and item.get('enabled', True)), {})
+
+
+def _current_staff_id() -> str:
+    return _current_staff().get('id', '')
+
+
+def _is_admin() -> bool:
+    return _current_staff().get('role') == 'admin'
+
+
+def _public_current_staff() -> dict:
+    staff = _current_staff()
+    return _public_staff_cookie(staff) if staff else {}
+
+
+def _active_staff() -> dict:
+    current = _current_staff()
+    if current:
+        return current
+    if _setup_required():
+        return {}
+    active_id = _staff_cookies.get('active_staff_id', '')
+    active = next((item for item in _staff_accounts() if item.get('id') == active_id and item.get('enabled', True)), None)
+    return active or {}
+
+
+def _active_staff_id() -> str:
+    return _active_staff().get('id', '')
+
+
+def _active_cookie() -> str:
+    return _active_staff().get('cookie', '')
+
+
+def _staff_token_file(staff_id: str) -> str:
+    safe_id = re.sub(r'[^a-zA-Z0-9_-]+', '_', staff_id or 'default')
+    return os.path.join(STAFF_TOKEN_DIR, f'{safe_id}.txt')
+
+
+def _invalidate_facebook_cache():
+    _api_cache.clear()
+    _pages_cache.clear()
 
 
 def _clean_business_profile(body: dict) -> dict:
@@ -325,6 +470,140 @@ def _save_reply_suggestion_to_supabase(suggestion: dict) -> tuple[bool, str]:
         return False, str(e)[:300]
 
 
+def _save_comment_log_to_supabase(log: dict) -> tuple[bool, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False, 'Chưa cấu hình Supabase'
+    payload = {
+        'staff_id': log.get('staff_id', ''),
+        'staff_name': log.get('staff_name', ''),
+        'staff_username': log.get('staff_username', ''),
+        'facebook_user_id': log.get('facebook_user_id', ''),
+        'post_id': log.get('post_id', ''),
+        'group_id': log.get('group_id', ''),
+        'post_url': log.get('post_url', ''),
+        'comment_text': log.get('comment_text', ''),
+        'comment_id': log.get('comment_id', ''),
+        'page_id': log.get('page_id', ''),
+        'status': log.get('status', ''),
+        'error_message': log.get('error_message', ''),
+        'created_at': log.get('created_at'),
+    }
+    try:
+        resp = _req.post(
+            f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_COMMENT_LOG_TABLE}",
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal',
+            },
+            json=payload,
+            timeout=20,
+        )
+        if resp.status_code in (200, 201, 204):
+            return True, ''
+        return False, (resp.json().get('message') if resp.headers.get('content-type', '').startswith('application/json') else resp.text)[:300]
+    except Exception as e:
+        return False, str(e)[:300]
+
+
+def _record_comment_log(post_id: str, group_id: str, post_url: str, message: str, page_id: str,
+                        status: str, comment_id: str = '', error_message: str = '') -> dict:
+    global _comment_logs
+    staff = _current_staff()
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    log = {
+        'staff_id': staff.get('id', ''),
+        'staff_name': staff.get('name', ''),
+        'staff_username': staff.get('username', ''),
+        'facebook_user_id': _extract_cookie_user(staff.get('cookie', '')),
+        'post_id': post_id,
+        'group_id': group_id,
+        'post_url': post_url,
+        'comment_text': message,
+        'comment_id': comment_id,
+        'page_id': page_id,
+        'status': status,
+        'error_message': error_message,
+        'created_at': now,
+    }
+    _comment_logs.append(log)
+    _save_comment_logs()
+    supabase_ok, supabase_error = _save_comment_log_to_supabase(log)
+    log['storage'] = 'supabase' if supabase_ok else 'local'
+    if supabase_error:
+        log['storage_warning'] = supabase_error
+    return log
+
+
+def _today_utc_bounds() -> tuple[datetime, datetime]:
+    try:
+        tz = ZoneInfo(APP_TIMEZONE)
+    except Exception:
+        tz = ZoneInfo('Asia/Ho_Chi_Minh')
+    today = datetime.now(tz).date()
+    start_local = datetime.combine(today, time.min, tzinfo=tz)
+    end_local = datetime.combine(today, time.max, tzinfo=tz)
+    return start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def _parse_log_time(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _count_today_success_local(staff_id: str = '') -> int:
+    start_utc, end_utc = _today_utc_bounds()
+    count = 0
+    for item in _comment_logs:
+        if item.get('status') != 'success':
+            continue
+        if staff_id and item.get('staff_id') != staff_id:
+            continue
+        created_at = _parse_log_time(item.get('created_at', ''))
+        if created_at and start_utc <= created_at <= end_utc:
+            count += 1
+    return count
+
+
+def _count_today_success_supabase(staff_id: str = '') -> tuple[int | None, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return None, 'Chưa cấu hình Supabase'
+    start_utc, end_utc = _today_utc_bounds()
+    params = [
+        ('select', 'id'),
+        ('status', 'eq.success'),
+        ('created_at', f'gte.{start_utc.isoformat()}'),
+        ('created_at', f'lte.{end_utc.isoformat()}'),
+    ]
+    if staff_id:
+        params.append(('staff_id', f'eq.{staff_id}'))
+    try:
+        resp = _req.get(
+            f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_COMMENT_LOG_TABLE}",
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+                'Prefer': 'count=exact',
+                'Range': '0-0',
+            },
+            params=params,
+            timeout=20,
+        )
+        if resp.status_code not in (200, 206):
+            return None, resp.text[:300]
+        content_range = resp.headers.get('content-range') or resp.headers.get('Content-Range') or ''
+        if '/' in content_range:
+            return int(content_range.rsplit('/', 1)[-1]), ''
+        return len(resp.json()), ''
+    except Exception as e:
+        return None, str(e)[:300]
+
+
 def _get_ai_key(provider: str) -> str:
     stored_key = (_ai_config.get('keys') or {}).get(provider, '')
     env_keys = {
@@ -345,9 +624,22 @@ def _get_classifier() -> AIClassifier:
 
 
 def get_api(group_id: str) -> FacebookGroupAPI:
-    if group_id not in _api_cache:
-        _api_cache[group_id] = FacebookGroupAPI(group_id)
-    return _api_cache[group_id]
+    staff_id = _active_staff_id()
+    cache_key = f'{staff_id or "default"}:{group_id}'
+    if cache_key not in _api_cache:
+        token_file = _staff_token_file(staff_id) if staff_id else None
+        _api_cache[cache_key] = FacebookGroupAPI(group_id, cookie=_active_cookie(), token_file=token_file)
+    return _api_cache[cache_key]
+
+
+@app.before_request
+def _require_auth_for_api():
+    public_endpoints = {'auth_status', 'auth_login', 'auth_setup'}
+    if request.path.startswith('/api/') and request.endpoint not in public_endpoints:
+        if _setup_required():
+            return jsonify({'ok': False, 'error': 'Cần setup tài khoản đầu tiên', 'setup_required': True}), 401
+        if not _current_staff():
+            return jsonify({'ok': False, 'error': 'Vui lòng đăng nhập', 'auth_required': True}), 401
 
 
 # ── Telegram ───────────────────────────────────────────
@@ -411,6 +703,79 @@ def index():
     return redirect(WEB_UI_URL)
 
 
+@app.route('/api/auth/status')
+def auth_status():
+    staff = _public_current_staff()
+    return jsonify({
+        'ok': True,
+        'authenticated': bool(staff),
+        'setup_required': _setup_required(),
+        'staff': staff,
+    })
+
+
+@app.route('/api/auth/setup', methods=['POST'])
+def auth_setup():
+    global _staff_cookies
+    if not _setup_required():
+        return jsonify({'ok': False, 'error': 'Hệ thống đã setup tài khoản đầu tiên'}), 400
+    body = request.get_json() or {}
+    name = str(body.get('name') or '').strip()[:80]
+    username = str(body.get('username') or '').strip().lower()[:60]
+    password = str(body.get('password') or '')
+    cookie = str(body.get('cookie') or '').strip()
+    if not name or not username or not password or not cookie:
+        return jsonify({'ok': False, 'error': 'Nhập đủ tên, tài khoản, mật khẩu và cookie'}), 400
+    if len(password) < 6:
+        return jsonify({'ok': False, 'error': 'Mật khẩu tối thiểu 6 ký tự'}), 400
+    if 'c_user=' not in cookie:
+        return jsonify({'ok': False, 'error': 'Cookie chưa có c_user, vui lòng kiểm tra lại'}), 400
+
+    salt, digest = _hash_password(password)
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    staff_id = uuid.uuid4().hex[:12]
+    _staff_cookies = {
+        'active_staff_id': staff_id,
+        'staff': [{
+            'id': staff_id,
+            'name': name,
+            'username': username,
+            'password_salt': salt,
+            'password_hash': digest,
+            'cookie': cookie,
+            'role': 'admin',
+            'enabled': True,
+            'created_at': now,
+            'updated_at': now,
+        }]
+    }
+    _save_staff_cookies()
+    session['staff_id'] = staff_id
+    _invalidate_facebook_cache()
+    return jsonify({'ok': True, 'staff': _public_current_staff()})
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    body = request.get_json() or {}
+    username = str(body.get('username') or '').strip().lower()
+    password = str(body.get('password') or '')
+    staff = next((item for item in _staff_accounts()
+                  if item.get('enabled', True) and item.get('username') == username), None)
+    if not staff or not _verify_password(password, staff.get('password_salt', ''), staff.get('password_hash', '')):
+        return jsonify({'ok': False, 'error': 'Sai tài khoản hoặc mật khẩu'}), 401
+    session['staff_id'] = staff['id']
+    _invalidate_facebook_cache()
+    return jsonify({'ok': True, 'staff': _public_current_staff()})
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    session.pop('staff_id', None)
+    _invalidate_facebook_cache()
+    return jsonify({'ok': True})
+
+
 @app.route('/api/posts')
 def api_posts():
     global _seen_ids
@@ -423,9 +788,7 @@ def api_posts():
         for gid in group_ids:
             posts = get_api(gid).get_posts(limit)
             if posts is None:
-                return jsonify({
-                    'error': 'Cookie Facebook hết hạn hoặc không hợp lệ — đăng nhập facebook.com, copy cookie mới vào data/cookie.txt rồi restart backend',
-                }), 401
+                return jsonify({'error': 'Cookie hết hạn hoặc không hợp lệ — cập nhật cookie nhân sự đang dùng rồi tải lại'}), 401
             for p in posts:
                 p['_group_id'] = gid
             all_posts.extend(posts)
@@ -488,17 +851,60 @@ def api_comment():
     message = body.get('message', '').strip()
     group_id = body.get('group_id', DEFAULT_GROUP)
     page_id = body.get('page_id', '').strip()
+    post_url = body.get('post_url', '').strip()
     if not post_id or not message:
         return jsonify({'ok': False, 'error': 'Thiếu post_id hoặc message'}), 400
     try:
         page_token = _pages_cache.get(page_id, {}).get('access_token') if page_id else None
         result = get_api(group_id).post_comment(post_id, message, page_token)
         if result and 'id' in result:
-            return jsonify({'ok': True, 'comment_id': result['id']})
+            log = _record_comment_log(post_id, group_id, post_url, message, page_id, 'success', comment_id=result['id'])
+            payload = {'ok': True, 'comment_id': result['id'], 'log_storage': log.get('storage')}
+            if log.get('storage_warning'):
+                payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
+            return jsonify(payload)
         err = (result or {}).get('error', {}).get('message', 'Lỗi không xác định')
-        return jsonify({'ok': False, 'error': err})
+        log = _record_comment_log(post_id, group_id, post_url, message, page_id, 'failed', error_message=err)
+        payload = {'ok': False, 'error': err, 'log_storage': log.get('storage')}
+        if log.get('storage_warning'):
+            payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
+        return jsonify(payload)
     except Exception as e:
-        return jsonify({'ok': False, 'error': str(e)}), 500
+        err = str(e)
+        log = _record_comment_log(post_id, group_id, post_url, message, page_id, 'failed', error_message=err)
+        payload = {'ok': False, 'error': err, 'log_storage': log.get('storage')}
+        if log.get('storage_warning'):
+            payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
+        return jsonify(payload), 500
+
+
+@app.route('/api/comment-logs', methods=['GET'])
+def comment_logs_get():
+    if not _is_admin():
+        staff_id = _current_staff_id()
+        rows = [item for item in _comment_logs if item.get('staff_id') == staff_id]
+    else:
+        rows = _comment_logs
+    return jsonify(rows[-200:])
+
+
+@app.route('/api/comment-stats/today', methods=['GET'])
+def comment_stats_today():
+    staff_id = '' if _is_admin() else _current_staff_id()
+    count, warning = _count_today_success_supabase(staff_id)
+    storage = 'supabase'
+    if count is None:
+        count = _count_today_success_local(staff_id)
+        storage = 'local'
+    payload = {
+        'ok': True,
+        'success_count': count,
+        'storage': storage,
+        'scope': 'all' if _is_admin() else 'self',
+    }
+    if warning and storage == 'local':
+        payload['warning'] = warning
+    return jsonify(payload)
 
 
 @app.route('/api/groups/resolve')
@@ -605,6 +1011,90 @@ def groups_remove(gid):
         except Exception as e:
             print(f'[supabase] delete_group failed: {e}')
     return jsonify({'ok': True, 'groups': _groups})
+
+
+@app.route('/api/staff-cookies', methods=['GET'])
+def staff_cookies_get():
+    if _is_admin():
+        staff_rows = [_public_staff_cookie(item) for item in _staff_accounts()]
+    else:
+        staff_rows = [_public_current_staff()] if _current_staff() else []
+    return jsonify({
+        'active_staff_id': _current_staff_id(),
+        'staff': staff_rows,
+        'can_manage': _is_admin(),
+        'fallback_cookie': bool(load_cookie()),
+    })
+
+
+@app.route('/api/staff-cookies', methods=['POST'])
+def staff_cookies_save():
+    global _staff_cookies
+    if not _is_admin():
+        return jsonify({'ok': False, 'error': 'Chỉ admin được thêm nhân sự'}), 403
+    body = request.get_json() or {}
+    name = str(body.get('name') or '').strip()[:80]
+    username = str(body.get('username') or '').strip().lower()[:60]
+    password = str(body.get('password') or '')
+    cookie = str(body.get('cookie') or '').strip()
+    if not name:
+        return jsonify({'ok': False, 'error': 'Thiếu tên nhân sự'}), 400
+    if not username:
+        return jsonify({'ok': False, 'error': 'Thiếu tài khoản đăng nhập'}), 400
+    if len(password) < 6:
+        return jsonify({'ok': False, 'error': 'Mật khẩu tối thiểu 6 ký tự'}), 400
+    if not cookie:
+        return jsonify({'ok': False, 'error': 'Thiếu cookie'}), 400
+    if 'c_user=' not in cookie:
+        return jsonify({'ok': False, 'error': 'Cookie chưa có c_user, vui lòng kiểm tra lại'}), 400
+
+    staff = _staff_cookies.setdefault('staff', [])
+    if any(item.get('username') == username for item in staff):
+        return jsonify({'ok': False, 'error': 'Tài khoản đăng nhập đã tồn tại'}), 400
+    now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+    saved_id = uuid.uuid4().hex[:12]
+    salt, digest = _hash_password(password)
+    staff.append({
+        'id': saved_id,
+        'name': name,
+        'username': username,
+        'password_salt': salt,
+        'password_hash': digest,
+        'cookie': cookie,
+        'role': 'staff',
+        'enabled': True,
+        'created_at': now,
+        'updated_at': now,
+    })
+    if not _staff_cookies.get('active_staff_id'):
+        _staff_cookies['active_staff_id'] = saved_id
+    _save_staff_cookies()
+    _invalidate_facebook_cache()
+    return jsonify({'ok': True, 'active_staff_id': _current_staff_id(), 'staff': [_public_staff_cookie(item) for item in staff], 'can_manage': True})
+
+
+@app.route('/api/staff-cookies/<staff_id>/activate', methods=['POST'])
+def staff_cookies_activate(staff_id):
+    return jsonify({'ok': False, 'error': 'Cookie được gắn theo tài khoản đăng nhập, không cho chọn thủ công'}), 403
+
+
+@app.route('/api/staff-cookies/<staff_id>', methods=['DELETE'])
+def staff_cookies_delete(staff_id):
+    if not _is_admin():
+        return jsonify({'ok': False, 'error': 'Chỉ admin được xoá nhân sự'}), 403
+    if staff_id == _current_staff_id():
+        return jsonify({'ok': False, 'error': 'Không thể xoá tài khoản đang đăng nhập'}), 400
+    staff = _staff_accounts()
+    _staff_cookies['staff'] = [item for item in staff if item.get('id') != staff_id]
+    if _staff_cookies.get('active_staff_id') == staff_id:
+        _staff_cookies['active_staff_id'] = (_staff_cookies['staff'][0]['id'] if _staff_cookies['staff'] else '')
+    try:
+        os.remove(_staff_token_file(staff_id))
+    except OSError:
+        pass
+    _save_staff_cookies()
+    _invalidate_facebook_cache()
+    return jsonify({'ok': True, 'active_staff_id': _current_staff_id(), 'staff': [_public_staff_cookie(item) for item in _staff_cookies.get('staff', [])], 'can_manage': True})
 
 
 @app.route('/api/settings', methods=['GET'])

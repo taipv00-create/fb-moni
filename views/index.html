@@ -21,9 +21,24 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .header-sub { font-size: 12px; opacity: .75; margin-top: 1px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header-spacer { flex: 1; }
 .header-status { font-size: 12px; opacity: .8; white-space: nowrap; }
+.header-user { font-size: 12px; opacity: .9; white-space: nowrap; }
+.header-logout { border: 1px solid rgba(255,255,255,.45); background: rgba(255,255,255,.14); color: white; border-radius: 8px; padding: 5px 9px; font-size: 12px; cursor: pointer; }
 
 /* ── Main layout ── */
 .main { max-width: 700px; margin: 0 auto; padding: 16px 12px 40px; }
+
+/* ── Auth ── */
+.auth-wrap { max-width: 440px; margin: 70px auto 0; padding: 0 14px; }
+.auth-card { background: white; border-radius: 14px; padding: 18px; box-shadow: 0 1px 10px rgba(0,0,0,.1); }
+.auth-title { font-size: 18px; font-weight: 800; margin-bottom: 5px; }
+.auth-sub { font-size: 13px; color: #65676b; margin-bottom: 14px; line-height: 1.4; }
+.auth-field { margin-bottom: 10px; }
+.auth-field label { display: block; font-size: 11px; font-weight: 700; color: #65676b; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 5px; }
+.auth-field input, .auth-field textarea { width: 100%; border: 1.5px solid #e4e6eb; border-radius: 10px; padding: 9px 11px; font-size: 14px; font-family: inherit; outline: none; }
+.auth-field textarea { min-height: 88px; resize: vertical; }
+.auth-field input:focus, .auth-field textarea:focus { border-color: #1877f2; }
+.auth-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.auth-status { font-size: 12px; color: #65676b; margin-top: 10px; min-height: 16px; }
 
 /* ── Panel (group/kw/tg bars) ── */
 .panel {
@@ -263,6 +278,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .profile-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
 .profile-status { font-size: 12px; color: #65676b; }
 @media (max-width: 560px) { .profile-grid { grid-template-columns: 1fr; } }
+.staff-cookie-list { display: flex; flex-direction: column; gap: 7px; width: 100%; }
+.staff-cookie-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  border: 1px solid #e4e6eb; border-radius: 10px; padding: 8px 10px; background: #fff;
+}
+.staff-cookie-main { min-width: 0; }
+.staff-cookie-name { font-size: 13px; font-weight: 700; color: #1f2937; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.staff-cookie-meta { font-size: 11px; color: #6b7280; margin-top: 2px; word-break: break-word; }
+.staff-cookie-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.staff-active-badge { font-size: 11px; color: #047857; background: #d1fae5; border-radius: 999px; padding: 1px 7px; }
+.staff-cookie-empty { width: 100%; font-size: 12px; color: #6b7280; }
 
 /* ── Category badge ── */
 .badge-cat { cursor: default; }
@@ -329,10 +355,56 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     <div class="header-sub" id="headerSub">Đang tải...</div>
   </div>
   <div class="header-spacer"></div>
+  <div class="header-user" id="authUser"></div>
+  <button class="header-logout" id="logoutBtn" onclick="logout()" style="display:none">Đăng xuất</button>
   <div class="header-status" id="headerStatus"></div>
 </div>
 
-<div class="main">
+<div class="auth-wrap" id="authWrap">
+  <div class="auth-card" id="loginCard">
+    <div class="auth-title">Đăng nhập</div>
+    <div class="auth-sub">Mỗi nhân sự dùng tài khoản riêng. Cookie Facebook sẽ tự gắn theo tài khoản đăng nhập.</div>
+    <div class="auth-field">
+      <label>Tài khoản</label>
+      <input type="text" id="loginUsername" autocomplete="username">
+    </div>
+    <div class="auth-field">
+      <label>Mật khẩu</label>
+      <input type="password" id="loginPassword" autocomplete="current-password">
+    </div>
+    <div class="auth-actions">
+      <button class="btn btn-primary" onclick="login()">Đăng nhập</button>
+    </div>
+    <div class="auth-status" id="loginStatus"></div>
+  </div>
+
+  <div class="auth-card" id="setupCard" style="display:none">
+    <div class="auth-title">Setup tài khoản đầu tiên</div>
+    <div class="auth-sub">Tài khoản đầu tiên là admin. Sau đó admin thêm nhân sự, mỗi người có cookie riêng và không tự sửa cookie.</div>
+    <div class="auth-field">
+      <label>Tên nhân sự</label>
+      <input type="text" id="setupName" placeholder="Ví dụ: Sale A">
+    </div>
+    <div class="auth-field">
+      <label>Tài khoản đăng nhập</label>
+      <input type="text" id="setupUsername" autocomplete="username">
+    </div>
+    <div class="auth-field">
+      <label>Mật khẩu</label>
+      <input type="password" id="setupPassword" autocomplete="new-password">
+    </div>
+    <div class="auth-field">
+      <label>Cookie Facebook</label>
+      <textarea id="setupCookie" placeholder="Dán cookie có c_user=..."></textarea>
+    </div>
+    <div class="auth-actions">
+      <button class="btn btn-primary" onclick="setupFirstAccount()">Tạo admin</button>
+    </div>
+    <div class="auth-status" id="setupStatus"></div>
+  </div>
+</div>
+
+<div class="main" id="appMain" style="display:none">
 
   <!-- Toolbar -->
   <div class="toolbar">
@@ -355,6 +427,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
       <span class="unit">phút</span>
     </div>
     <div class="toolbar-spacer"></div>
+    <span class="toolbar-status" id="commentTodayCount"></span>
     <span class="toolbar-status" id="toolStatus"></span>
   </div>
 
@@ -392,6 +465,42 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     </div>
     <div class="panel-hint">Nhắn <b>/start</b> cho <b>@fb_noti_tai_bot</b> → nhận Chat ID tự động</div>
     <div style="font-size:12px;color:#65676b;width:100%" id="tgStatus"></div>
+  </div>
+
+  <!-- Staff cookies -->
+  <div class="ai-panel">
+    <div class="ai-row">
+      <div class="panel-label">🍪 Cookie nhân sự</div>
+      <span class="profile-status" id="staffCookieStatus"></span>
+    </div>
+    <div class="ai-row">
+      <div class="profile-grid" id="staffCookieManage">
+        <div class="profile-field">
+          <label>Tên nhân sự</label>
+          <input type="text" id="staffNameInp" placeholder="Tên cố định của nhân sự">
+        </div>
+        <div class="profile-field">
+          <label>Tài khoản đăng nhập</label>
+          <input type="text" id="staffUsernameInp" placeholder="username">
+        </div>
+        <div class="profile-field">
+          <label>Mật khẩu</label>
+          <input type="password" id="staffPasswordInp" placeholder="Tối thiểu 6 ký tự">
+        </div>
+        <div class="profile-field full">
+          <label>Cookie Facebook</label>
+          <textarea id="staffCookieInp" placeholder="Dán cookie Facebook của nhân sự có c_user=..."></textarea>
+        </div>
+        <div class="profile-actions">
+          <button class="btn-ai-sm btn-ai-save" onclick="saveStaffCookie()">💾 Thêm nhân sự</button>
+        </div>
+      </div>
+    </div>
+    <div class="ai-row">
+      <div class="staff-cookie-list" id="staffCookieList">
+        <div class="staff-cookie-empty">Chưa có cookie nhân sự.</div>
+      </div>
+    </div>
   </div>
 
   <!-- AI Panel -->
@@ -595,6 +704,99 @@ let allPosts   = [];
 let leads      = {};
 let replySuggestions = {};
 let businessProfile = {};
+let staffCookieRows = [];
+let activeStaffId = '';
+let currentStaff = null;
+let canManageStaff = false;
+let appStarted = false;
+
+function setAuthScreen(mode) {
+  document.getElementById('authWrap').style.display = mode ? '' : 'none';
+  document.getElementById('loginCard').style.display = mode === 'login' ? '' : 'none';
+  document.getElementById('setupCard').style.display = mode === 'setup' ? '' : 'none';
+  document.getElementById('appMain').style.display = mode ? 'none' : '';
+  document.getElementById('logoutBtn').style.display = mode ? 'none' : '';
+}
+
+function setCurrentStaff(staff) {
+  currentStaff = staff || null;
+  const userEl = document.getElementById('authUser');
+  userEl.textContent = currentStaff ? `${currentStaff.name || currentStaff.username} · ${currentStaff.role === 'admin' ? 'admin' : 'nhân sự'}` : '';
+}
+
+async function checkAuth() {
+  try {
+    const r = await fetch('/api/auth/status');
+    const d = await r.json();
+    if (d.setup_required) {
+      setAuthScreen('setup');
+      return false;
+    }
+    if (!d.authenticated) {
+      setAuthScreen('login');
+      return false;
+    }
+    setCurrentStaff(d.staff);
+    setAuthScreen('');
+    return true;
+  } catch {
+    setAuthScreen('login');
+    document.getElementById('loginStatus').textContent = 'Không kết nối được server';
+    return false;
+  }
+}
+
+async function setupFirstAccount() {
+  const status = document.getElementById('setupStatus');
+  const payload = {
+    name: document.getElementById('setupName').value.trim(),
+    username: document.getElementById('setupUsername').value.trim(),
+    password: document.getElementById('setupPassword').value,
+    cookie: document.getElementById('setupCookie').value.trim(),
+  };
+  status.textContent = 'Đang tạo tài khoản...';
+  try {
+    const r = await fetch('/api/auth/setup', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const d = await r.json();
+    if (d.ok) {
+      setCurrentStaff(d.staff);
+      setAuthScreen('');
+      await startApp();
+    } else {
+      status.textContent = d.error || 'Lỗi setup';
+    }
+  } catch { status.textContent = 'Lỗi kết nối server'; }
+}
+
+async function login() {
+  const status = document.getElementById('loginStatus');
+  status.textContent = 'Đang đăng nhập...';
+  try {
+    const r = await fetch('/api/auth/login', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('loginUsername').value.trim(),
+        password: document.getElementById('loginPassword').value,
+      })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      setCurrentStaff(d.staff);
+      setAuthScreen('');
+      await startApp();
+    } else {
+      status.textContent = d.error || 'Sai tài khoản hoặc mật khẩu';
+    }
+  } catch { status.textContent = 'Lỗi kết nối server'; }
+}
+
+async function logout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  location.reload();
+}
 
 // ── Render post ────────────────────────────────────────
 function renderPost(post) {
@@ -705,7 +907,7 @@ function renderPost(post) {
       <button class="btn-write-comment" onclick="toggleCmtBox(this)">✏️ Bình luận</button>
     </div>
   </div>
-  <div class="comment-box" data-post="${post.id}" data-group="${gid}">
+  <div class="comment-box" data-post="${post.id}" data-group="${gid}" data-url="${esc(post.permalink_url || '')}">
     <textarea class="comment-textarea" rows="2" placeholder="Nhập bình luận..."></textarea>
     <div class="comment-row">
       <select class="comment-as"><option value="">👤 Cá nhân</option></select>
@@ -743,20 +945,43 @@ async function sendComment(btn) {
   const message = ta.value.trim();
   const post_id = box.dataset.post;
   const group_id= box.dataset.group;
+  const post_url= box.dataset.url || '';
   if (!message) return;
   btn.disabled = true;
   result.textContent = '⏳ Đang gửi…';
   try {
     const r = await fetch('/api/comment', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ post_id, group_id, message, page_id: sel.value })
+      body: JSON.stringify({ post_id, group_id, post_url, message, page_id: sel.value })
     });
     const d = await r.json();
-    if (d.ok) { ta.value=''; result.textContent='✅ Đã bình luận!'; }
-    else result.textContent = '❌ ' + (d.error||'Lỗi');
+    if (d.ok) {
+      ta.value='';
+      result.textContent = d.log_storage === 'supabase' ? '✅ Đã bình luận và lưu Supabase!' : '✅ Đã bình luận, log lưu local!';
+      await loadTodayCommentStats();
+    } else {
+      result.textContent = '❌ ' + (d.error||'Lỗi') + (d.log_storage ? ` · log: ${d.log_storage}` : '');
+    }
   } catch { result.textContent = '❌ Lỗi kết nối'; }
   btn.disabled = false;
   setTimeout(() => { result.textContent = ''; }, 4000);
+}
+
+async function loadTodayCommentStats() {
+  const el = document.getElementById('commentTodayCount');
+  if (!el) return;
+  try {
+    const r = await fetch('/api/comment-stats/today');
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'Không tải được thống kê');
+    el.textContent = `✅ Comment hôm nay: ${d.success_count}`;
+    el.title = d.storage === 'supabase'
+      ? 'Đếm comment thành công trong ngày từ Supabase'
+      : 'Đếm comment thành công trong ngày từ local vì Supabase chưa đọc được';
+  } catch {
+    el.textContent = 'Comment hôm nay: --';
+    el.title = 'Không tải được thống kê comment hôm nay';
+  }
 }
 
 function findPost(postId) {
@@ -1170,6 +1395,120 @@ async function testTg(cid) {
 }
 document.getElementById('tgInp').addEventListener('keydown', e => { if(e.key==='Enter') addTg(); });
 
+// ── Staff cookies ─────────────────────────────────────
+function renderStaffCookies() {
+  const wrap = document.getElementById('staffCookieList');
+  document.getElementById('staffCookieManage').style.display = canManageStaff ? 'grid' : 'none';
+  if (!staffCookieRows.length) {
+    wrap.innerHTML = '<div class="staff-cookie-empty">Chưa có cookie nhân sự.</div>';
+    return;
+  }
+  wrap.innerHTML = staffCookieRows.map(item => {
+    const active = item.id === activeStaffId || (currentStaff && item.id === currentStaff.id);
+    const user = item.facebook_user_id ? `Facebook ID: ${esc(item.facebook_user_id)}` : 'Chưa đọc được c_user';
+    const actions = canManageStaff && !active
+      ? `<button class="btn-ai-sm btn-ai-del" onclick="deleteStaffCookie('${item.id}')">Xoá</button>`
+      : '';
+    return `<div class="staff-cookie-item">
+      <div class="staff-cookie-main">
+        <div class="staff-cookie-name">
+          ${esc(item.name || 'Chưa đặt tên')}
+          ${active ? '<span class="staff-active-badge">Đang dùng</span>' : ''}
+          <span class="staff-active-badge">${esc(item.role === 'admin' ? 'admin' : 'nhân sự')}</span>
+        </div>
+        <div class="staff-cookie-meta">@${esc(item.username || '')} · ${user} · ${esc(item.cookie_masked || '')}</div>
+      </div>
+      <div class="staff-cookie-actions">
+        ${actions}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function loadStaffCookies() {
+  try {
+    const r = await fetch('/api/staff-cookies');
+    const d = await r.json();
+    staffCookieRows = d.staff || [];
+    activeStaffId = d.active_staff_id || '';
+    canManageStaff = !!d.can_manage;
+    renderStaffCookies();
+  } catch {
+    document.getElementById('staffCookieStatus').textContent = 'Không tải được cookie nhân sự';
+  }
+}
+
+async function saveStaffCookie() {
+  const nameInp = document.getElementById('staffNameInp');
+  const usernameInp = document.getElementById('staffUsernameInp');
+  const passwordInp = document.getElementById('staffPasswordInp');
+  const cookieInp = document.getElementById('staffCookieInp');
+  const st = document.getElementById('staffCookieStatus');
+  const name = nameInp.value.trim();
+  const username = usernameInp.value.trim();
+  const password = passwordInp.value;
+  const cookie = cookieInp.value.trim();
+  if (!name || !username || !password || !cookie) {
+    st.textContent = 'Nhập đủ tên, tài khoản, mật khẩu và cookie';
+    st.style.color = '#dc2626';
+    return;
+  }
+  st.textContent = 'Đang lưu cookie...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/staff-cookies', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, username, password, cookie })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      staffCookieRows = d.staff || [];
+      activeStaffId = d.active_staff_id || '';
+      canManageStaff = !!d.can_manage;
+      nameInp.value = '';
+      usernameInp.value = '';
+      passwordInp.value = '';
+      cookieInp.value = '';
+      renderStaffCookies();
+      st.textContent = '✅ Đã lưu cookie nhân sự';
+      st.style.color = '#16a34a';
+      await loadPages();
+      await loadPosts();
+    } else {
+      st.textContent = '❌ ' + (d.error || 'Lỗi lưu cookie');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối';
+    st.style.color = '#dc2626';
+  }
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 4000);
+}
+
+async function deleteStaffCookie(staffId) {
+  if (!confirm('Xoá cookie nhân sự này?')) return;
+  const st = document.getElementById('staffCookieStatus');
+  try {
+    const r = await fetch(`/api/staff-cookies/${staffId}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (d.ok) {
+      staffCookieRows = d.staff || [];
+      activeStaffId = d.active_staff_id || '';
+      canManageStaff = !!d.can_manage;
+      renderStaffCookies();
+      st.textContent = '✅ Đã xoá cookie';
+      st.style.color = '#16a34a';
+      await loadPages();
+      await loadPosts();
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối';
+    st.style.color = '#dc2626';
+  }
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 4000);
+}
+
 // ── Post modal ─────────────────────────────────────────
 function openPostModal() {
   document.getElementById('postGroupList').innerHTML =
@@ -1478,24 +1817,54 @@ async function saveAiConfig() {
   });
 }
 
+function isAiQuotaError(message) {
+  const text = String(message || '').toLowerCase();
+  return text.includes('quota') || text.includes('rate-limit') || text.includes('rate limit') || text.includes('429');
+}
+
+async function showAiError(message, options = {}) {
+  const st = document.getElementById('aiStatus');
+  const text = message || 'AI đang lỗi';
+  st.textContent = '❌ ' + text;
+  st.style.color = '#dc2626';
+  if (isAiQuotaError(text)) {
+    document.getElementById('aiAutoClassify').checked = false;
+    await saveAiConfig();
+    st.textContent = '⚠️ ' + text + ' Đã tắt tự động AI để tránh gọi tiếp.';
+    st.style.color = '#b45309';
+  }
+  if (options.clear !== false) {
+    setTimeout(() => { st.textContent = ''; }, options.timeout || 9000);
+  }
+}
+
 async function testAi() {
   const st = document.getElementById('aiStatus');
   st.textContent = '⏳ Đang test...'; st.style.color = '#65676b';
+  let shouldClear = true;
   try {
     const r = await fetch('/api/ai/test', { method: 'POST' });
     const d = await r.json();
-    st.textContent = d.ok ? '✅ Kết nối OK!' : '❌ ' + (d.error || 'Lỗi');
-    st.style.color = d.ok ? '#16a34a' : '#dc2626';
+    if (d.ok) {
+      st.textContent = '✅ Kết nối OK!';
+      st.style.color = '#16a34a';
+    } else {
+      await showAiError(d.error || 'Lỗi', { clear: false });
+      shouldClear = false;
+    }
   } catch { st.textContent = '❌ Lỗi kết nối'; st.style.color = '#dc2626'; }
-  setTimeout(() => { st.textContent = ''; }, 4000);
+  if (shouldClear) setTimeout(() => { st.textContent = ''; }, 4000);
 }
 
 async function classifyAll() {
   if (!allPosts.length) return;
   const btn = document.getElementById('btnClassify');
+  const st = document.getElementById('aiStatus');
   const prev = btn.textContent;
   btn.disabled = true;
   btn.textContent = '⏳ Đang phân loại...';
+  st.textContent = '⏳ Đang phân loại...';
+  st.style.color = '#65676b';
   try {
     const r = await fetch('/api/ai/classify', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1506,12 +1875,15 @@ async function classifyAll() {
       Object.assign(classifications, d.classifications);
       updateCatFilter();
       applyFilter();
+      st.textContent = '✅ Đã phân loại bài viết';
+      st.style.color = '#16a34a';
     } else {
-      alert('Lỗi: ' + (d.error || 'Không xác định'));
+      await showAiError(d.error || 'Không xác định', { clear: false });
     }
-  } catch { alert('Lỗi kết nối server'); }
+  } catch { await showAiError('Lỗi kết nối server', { clear: false }); }
   btn.disabled = false;
   btn.textContent = prev;
+  setTimeout(() => { if (st.textContent.startsWith('✅')) st.textContent = ''; }, 5000);
 }
 
 async function extractLeadsAll() {
@@ -1544,14 +1916,10 @@ async function extractLeadsAll() {
         st.style.color = '#65676b';
       }
     } else {
-      st.textContent = '❌ ' + (d.error || 'Không xác định');
-      st.style.color = '#dc2626';
-      alert('Lỗi: ' + (d.error || 'Không xác định'));
+      await showAiError(d.error || 'Không xác định', { clear: false });
     }
   } catch {
-    st.textContent = '❌ Lỗi kết nối server';
-    st.style.color = '#dc2626';
-    alert('Lỗi kết nối server');
+    await showAiError('Lỗi kết nối server', { clear: false });
   }
   btn.disabled = false;
   btn.textContent = prev;
@@ -1568,7 +1936,14 @@ function updateCatFilter() {
 }
 
 // ── Init ───────────────────────────────────────────────
-(async function init() {
+async function startApp() {
+  if (appStarted) {
+    await loadStaffCookies();
+    await loadTodayCommentStats();
+    await loadPosts();
+    return;
+  }
+  appStarted = true;
   try {
     const sr = await fetch('/api/settings');
     const s  = await sr.json();
@@ -1578,6 +1953,8 @@ function updateCatFilter() {
 
   await loadBusinessProfile();
   await loadAiConfig();
+  await loadStaffCookies();
+  await loadTodayCommentStats();
   await loadGroups();
   await Promise.all(groups.map(loadGroupName));
   await Promise.all(groups.map(g =>
@@ -1593,6 +1970,11 @@ function updateCatFilter() {
   await loadPosts();
   if (aiConfig.auto_classify) classifyAll();
   if (window._autoOnInit) startAuto();
+}
+
+(async function authBootstrap() {
+  const ok = await checkAuth();
+  if (ok) await startApp();
 })();
 </script>
 </body>

@@ -235,6 +235,16 @@ def _as_float(value, default: float = 0.0) -> float:
     return max(0.0, min(1.0, parsed))
 
 
+def _friendly_ai_error(message: str) -> str:
+    msg = str(message or '').strip()
+    lower = msg.lower()
+    if 'quota' in lower or 'rate-limit' in lower or 'rate limit' in lower or '429' in lower:
+        return 'Gemini đã vượt quota/gói miễn phí. Vui lòng chờ reset quota, đổi API key khác, hoặc nâng gói/bật billing rồi thử lại.'
+    if 'api key' in lower and ('invalid' in lower or 'leaked' in lower):
+        return 'API key không hợp lệ hoặc đã bị báo lộ. Vui lòng đổi API key mới.'
+    return msg or 'AI API error'
+
+
 class AIClassifier:
     def __init__(self, provider: str, model: str, api_key: str, categories: List[str] = None):
         self.provider = provider
@@ -583,7 +593,7 @@ class AIClassifier:
             }, timeout=60)
         data = resp.json()
         if 'error' in data:
-            raise Exception(data['error'].get('message', 'Gemini API error'))
+            raise Exception(_friendly_ai_error(data['error'].get('message', 'Gemini API error')))
         return data['candidates'][0]['content']['parts'][0]['text']
 
     def _call_openai(self, prompt: str) -> str:

@@ -10,36 +10,41 @@ FB_CLIENT_ID = '350685531728'
 GRAPH_URL = 'https://graph.facebook.com/v21.0'
 
 
-def load_token() -> Optional[str]:
-    if not os.path.exists(TOKEN_FILE):
+def load_token(token_file: str = None) -> Optional[str]:
+    token_file = token_file or TOKEN_FILE
+    if not os.path.exists(token_file):
         return None
-    with open(TOKEN_FILE, 'r', encoding='utf-8') as f:
+    with open(token_file, 'r', encoding='utf-8') as f:
         lines = [l.strip() for l in f if l.strip()]
     if not lines:
         return None
     return lines[-1].split('|')[-1]
 
 
-def load_cookie() -> Optional[str]:
+def load_cookie(cookie: str = None) -> Optional[str]:
+    if cookie:
+        return cookie.strip() or None
     if not os.path.exists(COOKIE_FILE):
         return None
     with open(COOKIE_FILE, 'r', encoding='utf-8') as f:
         return f.read().strip() or None
 
 
-def refresh_token() -> Optional[str]:
-    cookie = load_cookie()
+def refresh_token(cookie: str = None, token_file: str = None) -> Optional[str]:
+    cookie = load_cookie(cookie)
     if not cookie:
         print('Không tìm thấy cookie.txt — cần cập nhật cookie thủ công')
         return None
-    print('[fb] Token het han, dang lay token moi tu cookie...')
-    return FacebookTokenGenerator(FB_CLIENT_ID, cookie).GetToken()
+    print('🔄 Token hết hạn, đang lấy token mới từ cookie...')
+    return FacebookTokenGenerator(FB_CLIENT_ID, cookie, token_file).GetToken()
 
 
 class FacebookGroupAPI:
-    def __init__(self, group_id: str):
+    def __init__(self, group_id: str, cookie: str = None, token_file: str = None):
         self.group_id = group_id
-        self.access_token = load_token() or refresh_token()
+        self.cookie = load_cookie(cookie)
+        self.token_file = token_file
+        self.access_token = load_token(token_file) or refresh_token(self.cookie, token_file)
 
     def _is_expired(self, data: dict) -> bool:
         return data.get('error', {}).get('code') == 190
@@ -51,11 +56,11 @@ class FacebookGroupAPI:
             data = resp.json()
             if self._is_expired(data):
                 if attempt == 0:
-                    new_token = refresh_token()
+                    new_token = refresh_token(self.cookie, self.token_file)
                     if new_token:
                         self.access_token = new_token
                         continue
-                print('Không thể refresh token — kiểm tra lại cookie.txt')
+                print('Không thể refresh token — kiểm tra lại cookie')
                 return None
             return data
         return None
@@ -91,7 +96,7 @@ class FacebookGroupAPI:
         data = self._call('get', f'{GRAPH_URL}/{slug}', params={'fields': 'id,name'})
         if data and 'id' in data:
             return data
-        return _scrape_group_id(slug)
+        return _scrape_group_id(slug, self.cookie)
 
     def check_membership(self, group_id: str) -> bool:
         """Check if current user is a member of the group."""
@@ -110,7 +115,7 @@ class FacebookGroupAPI:
     def _cookie_check_membership(self, group_id: str) -> bool:
         """Check membership via mbasic.facebook.com (cookie-based)."""
         import re
-        cookie = load_cookie()
+        cookie = load_cookie(self.cookie)
         if not cookie:
             return True  # Can't check, assume member
         try:
@@ -140,7 +145,7 @@ class FacebookGroupAPI:
 
     def join_group(self, group_id: str) -> dict:
         import re
-        cookie = load_cookie()
+        cookie = load_cookie(self.cookie)
         if not cookie:
             return {'ok': False, 'error': 'Không có cookie'}
         try:
@@ -180,8 +185,8 @@ class FacebookGroupAPI:
             return {'ok': False, 'error': str(e)}
 
 
-def _scrape_group_id(slug: str) -> Optional[dict]:
-    cookie = load_cookie()
+def _scrape_group_id(slug: str, cookie: str = None) -> Optional[dict]:
+    cookie = load_cookie(cookie)
     if not cookie:
         return None
     import re as _re
