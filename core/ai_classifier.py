@@ -71,9 +71,10 @@ Mục tiêu:
 - Hiểu ý của khách hàng trong ngữ cảnh bài viết.
 - Viết câu trả lời ngắn, lịch sự, tự nhiên để sale copy paste.
 - Dùng thông tin bên bán nếu có để câu trả lời cụ thể hơn: tên, SĐT, địa chỉ, điểm mạnh/lý do nên chọn.
-- Nếu thiếu thông tin quan trọng, hỏi thêm đúng 1-2 ý cần thiết.
-- Không bịa giá, tồn kho, cam kết, số điện thoại, địa chỉ, chính sách nếu dữ liệu không có.
-- Không nhồi SĐT/địa chỉ vào mọi câu nếu ngữ cảnh chưa cần; ưu tiên tự nhiên, dễ copy paste.
+- Nếu SELLER_PROFILE có PHONE (khác rỗng), bắt buộc ghi số đó vào ít nhất 1 câu trả lời (ưu tiên mẫu "Chốt lịch/inbox" hoặc "Tư vấn"); không đổi số, không bịa số khác.
+- Nếu thiếu thông tin quan trọng khác, hỏi thêm đúng 1-2 ý cần thiết.
+- Không bịa giá, tồn kho, cam kết, địa chỉ, chính sách nếu dữ liệu không có.
+- Không nhồi SĐT vào mọi mẫu nếu không cần; ít nhất một mẫu phải có SĐT khi PHONE đã được cung cấp.
 - Không dùng markdown. Không giải thích ngoài JSON.
 
 Dữ liệu:
@@ -91,6 +92,7 @@ Trả về JSON object có đúng các trường:
   "urgency": "low|medium|high",
   "confidence": 0.0,
   "recommended_approach": "hướng xử lý cho sale, 1 câu ngắn",
+  "business_phone": "số SĐT bên bán từ SELLER_PROFILE PHONE, hoặc rỗng",
   "suggested_replies": [
     {{ "label": "Ngắn gọn", "text": "câu trả lời để copy paste" }},
     {{ "label": "Tư vấn", "text": "câu trả lời để copy paste" }},
@@ -139,6 +141,48 @@ def normalize_phone(raw: str) -> str:
     if len(digits) in (10, 11) and digits.startswith('0'):
         return digits
     return ''
+
+
+def _reply_contains_phone(text: str, phone: str) -> bool:
+    if not phone:
+        return True
+    digits = re.sub(r'\D', '', phone)
+    if digits and digits in re.sub(r'\D', '', text or ''):
+        return True
+    return phone in (text or '')
+
+
+def _ensure_phone_in_replies(
+    replies: List[Dict],
+    phone: str,
+    business_name: str = '',
+) -> List[Dict]:
+    """Đảm bảo ít nhất một mẫu trả lời có SĐT khi profile đã cấu hình."""
+    phone = normalize_phone(phone)
+    if not phone or not replies:
+        return replies
+
+    if any(_reply_contains_phone(r.get('text', ''), phone) for r in replies):
+        return replies
+
+    name = (business_name or 'bên em').strip()
+    phone_snippet = f'liên hệ {name} qua SĐT {phone}' if name else f'liên hệ SĐT {phone}'
+    preferred_labels = ('chốt', 'inbox', 'tư vấn', 'liên hệ')
+    target_idx = len(replies) - 1
+    for idx, item in enumerate(replies):
+        label = (item.get('label') or '').lower()
+        if any(k in label for k in preferred_labels):
+            target_idx = idx
+            break
+
+    updated = list(replies)
+    item = dict(updated[target_idx])
+    text = (item.get('text') or '').strip()
+    if text and not text.endswith(('.', '!', '?')):
+        text += '.'
+    item['text'] = f'{text} {name} có thể {phone_snippet} hoặc inbox để được hỗ trợ nhanh hơn.'.strip()
+    updated[target_idx] = item
+    return updated
 
 
 def extract_phones(text: str) -> List[str]:
@@ -255,7 +299,8 @@ class AIClassifier:
         try:
             resp = self._call_api(prompt)
             self.last_error = ''
-            return self._parse_reply_response(resp, post, source_meta)
+            result = self._parse_reply_response(resp, post, source_meta, business_profile or {})
+            return result
         except Exception as e:
             self.last_error = str(e)
             print(f'AI reply suggestion error: {e}')
@@ -442,7 +487,13 @@ class AIClassifier:
             unique.append(lead)
         return unique
 
-    def _parse_reply_response(self, text: str, post: Dict, source_meta: Dict[str, Dict]) -> Dict:
+    def _parse_reply_response(
+        self,
+        text: str,
+        post: Dict,
+        source_meta: Dict[str, Dict],
+        business_profile: Dict = None,
+    ) -> Dict:
         payload = _load_json_payload(text)
         if not isinstance(payload, dict):
             return {}
@@ -466,6 +517,13 @@ class AIClassifier:
         if not clean_replies:
             return {}
 
+        business_profile = business_profile or {}
+        business_phone = normalize_phone(
+            str(payload.get('business_phone') or business_profile.get('phone') or '')
+        )
+        biz_name = _compact_text(str(business_profile.get('business_name') or ''), 120)
+        clean_replies = _ensure_phone_in_replies(clean_replies, business_phone, biz_name)
+
         return {
             'post_id': pid,
             'target_source': str(payload.get('target_source') or meta.get('source') or 'post')[:30],
@@ -477,6 +535,7 @@ class AIClassifier:
             'urgency': str(payload.get('urgency') or 'low')[:20],
             'confidence': _as_float(payload.get('confidence'), 0.5),
             'recommended_approach': _compact_text(str(payload.get('recommended_approach') or ''), 260),
+            'business_phone': business_phone,
             'suggested_replies': clean_replies,
         }
 

@@ -28,7 +28,7 @@ class FacebookTokenGenerator:
             if not c_user:
                 raise ValueError('Không tìm thấy c_user trong cookie')
 
-            get_data = requests.get(
+            oauth_resp = requests.get(
                 'https://www.facebook.com/v2.3/dialog/oauth',
                 params={
                     'redirect_uri': 'fbconnect://success',
@@ -52,11 +52,18 @@ class FacebookTokenGenerator:
                     'upgrade-insecure-requests': '1',
                     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36',
                 }
-            ).text
+            )
+            if 'login.php' in oauth_resp.url or oauth_resp.status_code >= 400:
+                raise ValueError('Cookie hết hạn — Facebook chuyển về trang đăng nhập')
+            get_data = oauth_resp.text
 
             fb_dtsg_match = re.search(r'DTSGInitData",,\{"token":"(.+?)"', get_data.replace('[]', ''))
             if not fb_dtsg_match:
-                raise ValueError('Không tìm thấy fb_dtsg trong response')
+                fb_dtsg_match = re.search(r'\["DTSGInitData",\[\],\{"token":"([^"]+)"', get_data)
+            if not fb_dtsg_match:
+                fb_dtsg_match = re.search(r'name="fb_dtsg" value="([^"]+)"', get_data)
+            if not fb_dtsg_match:
+                raise ValueError('Không tìm thấy fb_dtsg — cookie có thể đã hết hạn')
             fb_dtsg = fb_dtsg_match.group(1)
 
             variables = '{"input":{"client_mutation_id":"4","actor_id":"' + c_user + '","config_enum":"GDP_READ","device_id":null,"experience_id":"' + str(uuid.uuid4()) + '","extra_params_json":"{\\"app_id\\":\\"' + self.client_id + '\\",\\"display\\":\\"\\\\\\"popup\\\\\\"\\",\\"kid_directed_site\\":\\"false\\",\\"logger_id\\":\\"\\\\\\"' + str(uuid.uuid4()) + '\\\\\\"\\",\\"next\\":\\"\\\\\\"read\\\\\\"\\",\\"redirect_uri\\":\\"\\\\\\"https:\\\\\\\\\\\\/\\\\\\\\\\\\/www.facebook.com\\\\\\\\\\\\/connect\\\\\\\\\\\\/login_success.html\\\\\\"\\",\\"response_type\\":\\"\\\\\\"token\\\\\\"\\",\\"return_scopes\\":\\"false\\",\\"scope\\":\\"[\\\\\\"email\\\\\\",\\\\\\"public_profile\\\\\\"]\\",\\"sso_key\\":\\"\\\\\\"com\\\\\\"\\",\\"steps\\":\\"{\\\\\\"read\\\\\\":[\\\\\\"email\\\\\\",\\\\\\"public_profile\\\\\\"]}\\",\\"tp\\":\\"\\\\\\"unspecified\\\\\\"\\",\\"cui_gk\\":\\"\\\\\\"[PASS]:\\\\\\"\\",\\"is_limited_login_shim\\":\\"false\\"}","flow_name":"GDP","flow_step_type":"STANDALONE","outcome":"APPROVED","source":"gdp_delegated","surface":"FACEBOOK_COMET"}}'

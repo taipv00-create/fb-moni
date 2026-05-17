@@ -577,6 +577,7 @@ function renderReplyBlock(postId) {
       <div><b>Nguồn:</b> ${source}${item.customer_name ? ' · ' + esc(item.customer_name) : ''}</div>
       <div><b>Ý khách:</b> ${esc(item.customer_need || 'AI chưa xác định rõ')}</div>
       ${item.recommended_approach ? `<div><b>Hướng xử lý:</b> ${esc(item.recommended_approach)}</div>` : ''}
+      ${item.business_phone ? `<div><b>SĐT bên mình:</b> <span class="lead-phone">☎ ${esc(item.business_phone)}</span></div>` : ''}
       ${item.storage ? `<div class="reply-save-note">Đã lưu: ${item.storage === 'supabase' ? 'Supabase' : 'local'}</div>` : ''}
       ${item.warning ? `<div class="reply-save-note">⚠️ ${esc(item.warning)}</div>` : ''}
     </div>

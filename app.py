@@ -4,9 +4,17 @@ import threading
 import requests as _req
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
+from flask_cors import CORS
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 
 from core.group_api import FacebookGroupAPI, load_token, load_cookie, refresh_token
 from core.ai_classifier import AIClassifier, DEFAULT_MODEL, DEFAULT_API_KEY, DEFAULT_CATEGORIES, PROVIDERS
+from core import supabase_store as sb
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
@@ -25,6 +33,8 @@ BUSINESS_PROFILE_FILE = os.path.join(DATA_DIR, 'business_profile.json')
 BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '8724375632:AAEgyz4yRPivDYWGXesTaJHhdqWYIraSoT8')
 DEFAULT_GROUP = os.environ.get('DEFAULT_GROUP', '3809441172650624')
 PORT = int(os.environ.get('PORT', 5000))
+WEB_UI_URL = (os.environ.get('WEB_UI_URL') or 'http://localhost:3000').rstrip('/')
+USE_LEGACY_UI = os.environ.get('USE_LEGACY_UI', '').lower() in ('1', 'true', 'yes')
 SUPABASE_URL = os.environ.get('SUPABASE_URL') or os.environ.get('VITE_SUPABASE_URL', '')
 SUPABASE_KEY = (
     os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
@@ -35,6 +45,16 @@ SUPABASE_REPLY_TABLE = os.environ.get('SUPABASE_REPLY_TABLE', 'ai_reply_suggesti
 SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_profiles')
 
 app = Flask(__name__, template_folder='views')
+
+_cors_origins = [
+    o.strip()
+    for o in os.environ.get(
+        'CORS_ORIGINS',
+        'http://localhost:3000,http://127.0.0.1:3000',
+    ).split(',')
+    if o.strip()
+]
+CORS(app, resources={r'/api/*': {'origins': _cors_origins}})
 
 # ── State ──────────────────────────────────────────────
 _api_cache: dict = {}
@@ -60,92 +80,127 @@ def _default_business_profile() -> dict:
     }
 
 
+USE_SUPABASE = sb.is_enabled()
+
+
+def _read_json(path, default):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def _write_json(path, data):
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _default_ai_config():
+    return {
+        'provider': 'gemini',
+        'model': DEFAULT_MODEL,
+        'keys': {'gemini': DEFAULT_API_KEY, 'openai': '', 'claude': ''},
+        'auto_classify': False,
+        'categories': DEFAULT_CATEGORIES,
+    }
+
+
 def _load_state():
     global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _reply_suggestions, _business_profile
     os.makedirs(DATA_DIR, exist_ok=True)
-    try:
-        _seen_ids = set(json.load(open(SEEN_FILE)))
-    except Exception:
-        _seen_ids = set()
-    try:
-        cfg = json.load(open(TG_CONFIG_FILE))
-        _tg_chat_ids = cfg.get('chat_ids') or ([cfg['chat_id']] if cfg.get('chat_id') else ['7129448686'])
-    except Exception:
-        _tg_chat_ids = ['7129448686']
-    try:
-        _groups = json.load(open(GROUPS_FILE))
-    except Exception:
-        _groups = [{'id': DEFAULT_GROUP, 'name': ''}]
-    try:
-        _settings = json.load(open(SETTINGS_FILE))
-    except Exception:
-        _settings = {'auto_refresh': True, 'interval': 5}
-    try:
-        _ai_config = json.load(open(AI_CONFIG_FILE))
-    except Exception:
-        _ai_config = {
-            'provider': 'gemini',
-            'model': DEFAULT_MODEL,
-            'keys': {'gemini': '', 'openai': '', 'claude': ''},
-            'auto_classify': False,
-            'categories': DEFAULT_CATEGORIES,
-        }
-    try:
-        _classifications = json.load(open(CLASSIFICATIONS_FILE))
-    except Exception:
-        _classifications = {}
-    try:
-        _leads = json.load(open(LEADS_FILE))
-    except Exception:
-        _leads = {}
-    try:
-        _reply_suggestions = json.load(open(REPLY_SUGGESTIONS_FILE))
-    except Exception:
-        _reply_suggestions = {}
-    try:
-        loaded_profile = json.load(open(BUSINESS_PROFILE_FILE))
-        _business_profile = {**_default_business_profile(), **loaded_profile}
-    except Exception:
-        _business_profile = _default_business_profile()
+
+    if USE_SUPABASE:
+        try:
+            _seen_ids = sb.list_seen_post_ids()
+            _tg_chat_ids = sb.list_chat_ids() or ['7129448686']
+            _groups = sb.list_groups() or [{'id': DEFAULT_GROUP, 'name': ''}]
+            _settings = sb.kv_get('settings', None) or {'auto_refresh': True, 'interval': 5}
+            _ai_config = sb.kv_get('ai_config', None) or _default_ai_config()
+            _classifications = sb.list_classifications()
+            _leads = _read_json(LEADS_FILE, {})
+            _reply_suggestions = _read_json(REPLY_SUGGESTIONS_FILE, {})
+            loaded_profile = _read_json(BUSINESS_PROFILE_FILE, {})
+            _business_profile = {**_default_business_profile(), **loaded_profile}
+            profile_sb, _ = _load_business_profile_from_supabase()
+            if profile_sb:
+                _business_profile = {**_business_profile, **profile_sb}
+            print('[supabase] state loaded from Supabase')
+            return
+        except Exception as e:
+            print(f'[supabase] load failed, fallback file: {e}')
+
+    _seen_ids = set(_read_json(SEEN_FILE, []))
+    cfg = _read_json(TG_CONFIG_FILE, {})
+    _tg_chat_ids = cfg.get('chat_ids') or ([cfg['chat_id']] if cfg.get('chat_id') else ['7129448686'])
+    _groups = _read_json(GROUPS_FILE, [{'id': DEFAULT_GROUP, 'name': ''}])
+    _settings = _read_json(SETTINGS_FILE, {'auto_refresh': True, 'interval': 5})
+    _ai_config = _read_json(AI_CONFIG_FILE, _default_ai_config())
+    _classifications = _read_json(CLASSIFICATIONS_FILE, {})
+    _leads = _read_json(LEADS_FILE, {})
+    _reply_suggestions = _read_json(REPLY_SUGGESTIONS_FILE, {})
+    loaded_profile = _read_json(BUSINESS_PROFILE_FILE, {})
+    _business_profile = {**_default_business_profile(), **loaded_profile}
 
 
-def _save_seen():
-    with open(SEEN_FILE, 'w') as f:
-        json.dump(list(_seen_ids), f)
+def _save_seen(new_posts=None):
+    """Lưu file seen_posts.json và đẩy metadata bài viết mới lên Supabase.
+
+    `new_posts` là list dict bài mới (đã có `_group_id`, `permalink_url`...).
+    """
+    _write_json(SEEN_FILE, list(_seen_ids))
+    if USE_SUPABASE and new_posts:
+        try:
+            sb.upsert_posts(new_posts)
+        except Exception as e:
+            print(f'[supabase] save_seen failed: {e}')
 
 
 def _save_tg():
-    with open(TG_CONFIG_FILE, 'w') as f:
-        json.dump({'chat_ids': _tg_chat_ids}, f)
+    _write_json(TG_CONFIG_FILE, {'chat_ids': _tg_chat_ids})
 
 
 def _save_groups():
-    with open(GROUPS_FILE, 'w') as f:
-        json.dump(_groups, f, ensure_ascii=False)
+    _write_json(GROUPS_FILE, _groups)
 
 
 def _save_settings():
-    with open(SETTINGS_FILE, 'w') as f:
-        json.dump(_settings, f)
+    _write_json(SETTINGS_FILE, _settings)
+    if USE_SUPABASE:
+        try:
+            sb.kv_set('settings', _settings)
+        except Exception as e:
+            print(f'[supabase] save_settings failed: {e}')
 
 
 def _save_ai_config():
-    with open(AI_CONFIG_FILE, 'w') as f:
-        json.dump(_ai_config, f, ensure_ascii=False)
+    _write_json(AI_CONFIG_FILE, _ai_config)
+    if USE_SUPABASE:
+        try:
+            sb.kv_set('ai_config', _ai_config)
+        except Exception as e:
+            print(f'[supabase] save_ai_config failed: {e}')
 
 
-def _save_classifications():
-    with open(CLASSIFICATIONS_FILE, 'w') as f:
-        json.dump(_classifications, f, ensure_ascii=False)
+def _save_classifications(new_items=None):
+    _write_json(CLASSIFICATIONS_FILE, _classifications)
+    if USE_SUPABASE and new_items:
+        try:
+            sb.upsert_classifications(new_items)
+        except Exception as e:
+            print(f'[supabase] save_classifications failed: {e}')
 
 
 def _save_leads():
-    with open(LEADS_FILE, 'w') as f:
+    with open(LEADS_FILE, 'w', encoding='utf-8') as f:
         json.dump(_leads, f, ensure_ascii=False)
 
 
 def _save_reply_suggestions():
-    with open(REPLY_SUGGESTIONS_FILE, 'w') as f:
+    with open(REPLY_SUGGESTIONS_FILE, 'w', encoding='utf-8') as f:
         json.dump(_reply_suggestions, f, ensure_ascii=False)
 
 
@@ -165,8 +220,10 @@ def _clean_business_profile(body: dict) -> dict:
 
 
 def _save_business_profile():
-    with open(BUSINESS_PROFILE_FILE, 'w') as f:
+    tmp = BUSINESS_PROFILE_FILE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(_business_profile, f, ensure_ascii=False)
+    os.replace(tmp, BUSINESS_PROFILE_FILE)
 
 
 def _load_business_profile_from_supabase() -> tuple[dict, str]:
@@ -348,7 +405,10 @@ def _poll_telegram():
 # ── Routes ─────────────────────────────────────────────
 @app.route('/')
 def index():
-    return render_template('index.html')
+    if USE_LEGACY_UI:
+        return render_template('index.html')
+    from flask import redirect
+    return redirect(WEB_UI_URL)
 
 
 @app.route('/api/posts')
@@ -363,7 +423,9 @@ def api_posts():
         for gid in group_ids:
             posts = get_api(gid).get_posts(limit)
             if posts is None:
-                return jsonify({'error': 'Cookie hết hạn — cập nhật data/cookie.txt rồi restart'}), 401
+                return jsonify({
+                    'error': 'Cookie Facebook hết hạn hoặc không hợp lệ — đăng nhập facebook.com, copy cookie mới vào data/cookie.txt rồi restart backend',
+                }), 401
             for p in posts:
                 p['_group_id'] = gid
             all_posts.extend(posts)
@@ -371,16 +433,18 @@ def api_posts():
         all_posts.sort(key=lambda x: x.get('created_time', ''), reverse=True)
 
         new_ids = set()
+        new_posts = []
         for post in all_posts:
             pid = post.get('id')
             if pid and pid not in _seen_ids:
                 new_ids.add(pid)
+                new_posts.append(post)
                 if not is_first:
                     threading.Thread(target=_notify_new_post, args=(post,), daemon=True).start()
 
         if new_ids:
             _seen_ids.update(new_ids)
-            _save_seen()
+            _save_seen(new_posts)
 
         return jsonify(all_posts)
     except Exception as e:
@@ -448,6 +512,11 @@ def api_resolve_group():
         if data and 'id' in data:
             is_member = api.check_membership(data['id'])
             return jsonify({'ok': True, 'id': data['id'], 'name': data.get('name', slug), 'is_member': is_member})
+        if data is None and not api.access_token:
+            return jsonify({
+                'ok': False,
+                'error': 'Cookie/token Facebook hết hạn — cập nhật data/cookie.txt rồi restart server',
+            }), 401
         err = (data or {}).get('error', {}).get('message', 'Không tìm thấy group')
         return jsonify({'ok': False, 'error': err})
     except Exception as e:
@@ -476,6 +545,11 @@ def tg_add():
     if cid not in _tg_chat_ids:
         _tg_chat_ids.append(cid)
         _save_tg()
+        if USE_SUPABASE:
+            try:
+                sb.add_chat_id(cid)
+            except Exception as e:
+                print(f'[supabase] add_chat_id failed: {e}')
     return jsonify({'ok': True, 'chat_ids': _tg_chat_ids})
 
 
@@ -484,6 +558,11 @@ def tg_remove(chat_id):
     if chat_id in _tg_chat_ids:
         _tg_chat_ids.remove(chat_id)
         _save_tg()
+        if USE_SUPABASE:
+            try:
+                sb.remove_chat_id(chat_id)
+            except Exception as e:
+                print(f'[supabase] remove_chat_id failed: {e}')
     return jsonify({'ok': True, 'chat_ids': _tg_chat_ids})
 
 
@@ -502,12 +581,16 @@ def groups_add():
         return jsonify({'ok': False, 'error': 'Thiếu id'}), 400
     if not any(g['id'] == gid for g in _groups):
         _groups.append({'id': gid, 'name': name})
-        _save_groups()
     else:
         for g in _groups:
             if g['id'] == gid and name:
                 g['name'] = name
-        _save_groups()
+    _save_groups()
+    if USE_SUPABASE:
+        try:
+            sb.upsert_group(gid, name)
+        except Exception as e:
+            print(f'[supabase] upsert_group failed: {e}')
     return jsonify({'ok': True, 'groups': _groups})
 
 
@@ -516,6 +599,11 @@ def groups_remove(gid):
     global _groups
     _groups = [g for g in _groups if g['id'] != gid]
     _save_groups()
+    if USE_SUPABASE:
+        try:
+            sb.delete_group(gid)
+        except Exception as e:
+            print(f'[supabase] delete_group failed: {e}')
     return jsonify({'ok': True, 'groups': _groups})
 
 
@@ -536,62 +624,71 @@ def settings_save():
 @app.route('/api/business-profile', methods=['GET'])
 def business_profile_get():
     global _business_profile
-    storage = 'local'
-    warning = ''
-    if not any((_business_profile or {}).values()):
-        remote_profile, warning = _load_business_profile_from_supabase()
-        if remote_profile:
-            _business_profile = {**_default_business_profile(), **remote_profile}
-            _save_business_profile()
-            storage = 'supabase'
-    payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
-    if warning:
-        payload['warning'] = warning
-    return jsonify(payload)
+    try:
+        storage = 'local'
+        warning = ''
+        if not any((_business_profile or {}).values()):
+            remote_profile, warning = _load_business_profile_from_supabase()
+            if remote_profile:
+                _business_profile = {**_default_business_profile(), **remote_profile}
+                _save_business_profile()
+                storage = 'supabase'
+        payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
+        if warning:
+            payload['warning'] = warning
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/business-profile', methods=['POST'])
 def business_profile_save():
     global _business_profile
-    body = request.get_json() or {}
-    _business_profile = _clean_business_profile(body)
-    _save_business_profile()
+    try:
+        body = request.get_json() or {}
+        _business_profile = _clean_business_profile(body)
+        _save_business_profile()
 
-    supabase_ok, supabase_error = _save_business_profile_to_supabase(_business_profile)
-    storage = 'supabase' if supabase_ok else 'local'
-    payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
-    if supabase_error:
-        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
-    return jsonify(payload)
+        supabase_ok, supabase_error = _save_business_profile_to_supabase(_business_profile)
+        storage = 'supabase' if supabase_ok else 'local'
+        payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
+        if supabase_error:
+            payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/business-profile/generate-text', methods=['POST'])
 def business_profile_generate_text():
     global _business_profile
-    body = request.get_json() or {}
-    profile = _clean_business_profile(body)
-    if not any(profile.values()):
-        return jsonify({'ok': False, 'error': 'Nhập ít nhất một thông tin trước khi tạo văn bản'}), 400
+    try:
+        body = request.get_json() or {}
+        profile = _clean_business_profile(body)
+        if not any(profile.values()):
+            return jsonify({'ok': False, 'error': 'Nhập ít nhất một thông tin trước khi tạo văn bản'}), 400
 
-    classifier = _get_classifier()
-    if not classifier.api_key:
-        return jsonify({'ok': False, 'error': 'Chưa cấu hình API key'})
+        classifier = _get_classifier()
+        if not classifier.api_key:
+            return jsonify({'ok': False, 'error': 'Chưa cấu hình API key — thêm GEMINI_API_KEY vào .env hoặc key trong UI'}), 400
 
-    generated = classifier.generate_business_text(profile)
-    if classifier.last_error and not generated:
-        return jsonify({'ok': False, 'error': classifier.last_error}), 502
-    if not generated:
-        return jsonify({'ok': False, 'error': 'AI chưa tạo được văn bản phù hợp'}), 502
+        generated = classifier.generate_business_text(profile)
+        if classifier.last_error and not generated:
+            return jsonify({'ok': False, 'error': classifier.last_error}), 502
+        if not generated:
+            return jsonify({'ok': False, 'error': 'AI chưa tạo được văn bản phù hợp'}), 502
 
-    _business_profile = _clean_business_profile(generated)
-    _save_business_profile()
+        _business_profile = _clean_business_profile(generated)
+        _save_business_profile()
 
-    supabase_ok, supabase_error = _save_business_profile_to_supabase(_business_profile)
-    storage = 'supabase' if supabase_ok else 'local'
-    payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
-    if supabase_error:
-        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
-    return jsonify(payload)
+        supabase_ok, supabase_error = _save_business_profile_to_supabase(_business_profile)
+        storage = 'supabase' if supabase_ok else 'local'
+        payload = {'ok': True, 'profile': _business_profile, 'storage': storage}
+        if supabase_error:
+            payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/telegram/test/<chat_id>', methods=['POST'])
@@ -681,7 +778,7 @@ def ai_classify():
     if classifier.last_error and not results:
         return jsonify({'ok': False, 'error': classifier.last_error}), 502
     _classifications.update(results)
-    _save_classifications()
+    _save_classifications(results)
     all_results = {p['id']: _classifications.get(p['id'], '') for p in posts}
     return jsonify({'ok': True, 'classifications': all_results})
 
@@ -704,35 +801,38 @@ def ai_reply_suggestions_get():
 @app.route('/api/ai/suggest-reply', methods=['POST'])
 def ai_suggest_reply():
     global _reply_suggestions
-    body = request.get_json() or {}
-    post = body.get('post') or {}
-    manual_comment = (body.get('comment') or '').strip()
-    if not post:
-        return jsonify({'ok': False, 'error': 'Không có bài viết'}), 400
+    try:
+        body = request.get_json() or {}
+        post = body.get('post') or {}
+        manual_comment = (body.get('comment') or '').strip()
+        if not post:
+            return jsonify({'ok': False, 'error': 'Không có bài viết'}), 400
 
-    classifier = _get_classifier()
-    if not classifier.api_key:
-        return jsonify({'ok': False, 'error': 'Chưa cấu hình API key'})
+        classifier = _get_classifier()
+        if not classifier.api_key:
+            return jsonify({'ok': False, 'error': 'Chưa cấu hình API key — thêm GEMINI_API_KEY vào .env hoặc key trong UI'}), 400
 
-    suggestion = classifier.suggest_reply(post, manual_comment, _business_profile)
-    if classifier.last_error and not suggestion:
-        return jsonify({'ok': False, 'error': classifier.last_error}), 502
-    if not suggestion:
-        return jsonify({'ok': False, 'error': 'AI chưa tạo được gợi ý phù hợp'}), 502
+        suggestion = classifier.suggest_reply(post, manual_comment, _business_profile)
+        if classifier.last_error and not suggestion:
+            return jsonify({'ok': False, 'error': classifier.last_error}), 502
+        if not suggestion:
+            return jsonify({'ok': False, 'error': 'AI chưa tạo được gợi ý phù hợp'}), 502
 
-    pid = suggestion.get('post_id') or post.get('id')
-    suggestion['post_id'] = pid
-    suggestion['group_id'] = post.get('_group_id', '')
-    suggestion['post_url'] = post.get('permalink_url', '')
-    _reply_suggestions[pid] = suggestion
-    _save_reply_suggestions()
+        pid = suggestion.get('post_id') or post.get('id')
+        suggestion['post_id'] = pid
+        suggestion['group_id'] = post.get('_group_id', '')
+        suggestion['post_url'] = post.get('permalink_url', '')
+        _reply_suggestions[pid] = suggestion
+        _save_reply_suggestions()
 
-    supabase_ok, supabase_error = _save_reply_suggestion_to_supabase(suggestion)
-    storage = 'supabase' if supabase_ok else 'local'
-    payload = {'ok': True, 'suggestion': suggestion, 'storage': storage}
-    if supabase_error:
-        payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
-    return jsonify(payload)
+        supabase_ok, supabase_error = _save_reply_suggestion_to_supabase(suggestion)
+        storage = 'supabase' if supabase_ok else 'local'
+        payload = {'ok': True, 'suggestion': suggestion, 'storage': storage}
+        if supabase_error:
+            payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/ai/extract-leads', methods=['POST'])
@@ -765,10 +865,29 @@ def ai_extract_leads():
     return jsonify(payload)
 
 
+# ── Supabase ───────────────────────────────────────────
+@app.route('/api/supabase/health')
+def supabase_health():
+    return jsonify({'enabled': USE_SUPABASE, **sb.ping()})
+
+
+@app.route('/api/saved-posts')
+def saved_posts():
+    if not USE_SUPABASE:
+        return jsonify({'ok': False, 'error': 'Supabase chưa được cấu hình'}), 400
+    limit = request.args.get('limit', 100, type=int)
+    group_id = (request.args.get('group_id') or '').strip() or None
+    try:
+        rows = sb.list_saved_posts(limit=limit, group_id=group_id)
+        return jsonify({'ok': True, 'count': len(rows), 'posts': rows})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 # ── Start ──────────────────────────────────────────────
 _load_state()
 threading.Thread(target=_poll_telegram, daemon=True).start()
 
 if __name__ == '__main__':
-    print(f'🚀 Server đang chạy tại http://localhost:{PORT}')
+    print(f'[server] supabase={"on" if USE_SUPABASE else "off"} | http://localhost:{PORT}')
     app.run(debug=False, port=PORT)

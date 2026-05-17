@@ -5,3 +5,5 @@ __pycache__/
 .DS_Store
 data/business_profile.json
 data/reply_suggestions.json
+data/ai_config.json
+.env (1)

@@ -32,7 +32,7 @@ def refresh_token() -> Optional[str]:
     if not cookie:
         print('Không tìm thấy cookie.txt — cần cập nhật cookie thủ công')
         return None
-    print('🔄 Token hết hạn, đang lấy token mới từ cookie...')
+    print('[fb] Token het han, dang lay token moi tu cookie...')
     return FacebookTokenGenerator(FB_CLIENT_ID, cookie).GetToken()
 
 
