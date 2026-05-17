@@ -76,7 +76,7 @@ export function PostCard({
   const shares = post.shares?.count ?? 0;
   const cData = post.comments || {};
   const cList = cData.data || [];
-  const cCount = cData.summary?.total_count ?? 0;
+  const cCount = cData.summary?.total_count ?? cList.length;
   const text = post.message || '';
   const long = text.length > 300;
   const pid = postShortId(post);
@@ -92,7 +92,12 @@ export function PostCard({
   const [suggestBusy, setSuggestBusy] = useState(false);
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [imageUrl, setImageUrl] = useState('');
+  const [uploadingImage, setUploadingImage] = useState(false);
   const postLeads = leads || [];
+  const visibleCommentSummary =
+    commentSummary && !((commentSummary.fetched_comment_count ?? 0) === 0 && cCount > 0)
+      ? commentSummary
+      : undefined;
 
   const atts = (post.attachments?.data || []).map((a, i) => {
     if (a.type === 'photo') {
@@ -162,6 +167,31 @@ export function PostCard({
     setTimeout(() => setCmtMsg(''), 4000);
   }
 
+  async function uploadCommentImage(file?: File) {
+    if (!file) return;
+    setUploadingImage(true);
+    setCmtMsg('⏳ Đang upload ảnh...');
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const r = await api('/api/uploads/comment-image', {
+        method: 'POST',
+        body: fd,
+      });
+      const d = await r.json();
+      if (d.ok && d.image_url) {
+        setImageUrl(d.image_url);
+        setCmtMsg('✅ Đã upload ảnh');
+      } else {
+        setCmtMsg('❌ ' + (d.error || 'Upload ảnh lỗi'));
+      }
+    } catch {
+      setCmtMsg('❌ Lỗi upload ảnh');
+    }
+    setUploadingImage(false);
+    setTimeout(() => setCmtMsg(''), 3500);
+  }
+
   return (
     <div className="card">
       <div className="card-header">
@@ -206,7 +236,7 @@ export function PostCard({
                 <span className="badge badge-reply">🤖 Gợi ý</span>
               </>
             ) : null}
-            {commentSummary ? (
+            {visibleCommentSummary ? (
               <>
                 <span className="meta-dot" />
                 <span className="badge badge-reply">📊 Đã tóm tắt</span>
@@ -268,7 +298,7 @@ export function PostCard({
       ) : null}
       <LeadBlock items={postLeads} />
       {replySuggestion ? <ReplySuggestionBlock item={replySuggestion} /> : null}
-      {commentSummary ? <CommentSummaryBlock item={commentSummary} /> : null}
+      {visibleCommentSummary ? <CommentSummaryBlock item={visibleCommentSummary} /> : null}
       <div className="card-footer">
         <div className="post-link">
           <a href={post.permalink_url || '#'} target="_blank" rel="noreferrer">
@@ -317,12 +347,32 @@ export function PostCard({
       </div>
       <div className={`comment-box${cmtOpen ? ' open' : ''}`}>
         <textarea className="comment-textarea" rows={2} placeholder="Nhập bình luận..." data-cmt={post.id} />
+        <div className="comment-file-row">
+          <label className={`btn-image-upload${uploadingImage ? ' disabled' : ''}`}>
+            📎 Upload ảnh
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              disabled={uploadingImage}
+              onChange={(e) => void uploadCommentImage(e.target.files?.[0])}
+            />
+          </label>
+          <span className="comment-file-hint">JPG, PNG, WEBP, GIF tối đa 8MB</span>
+        </div>
         <input
           className="comment-image-input"
           value={imageUrl}
           onChange={(e) => setImageUrl(e.target.value)}
-          placeholder="URL ảnh public nếu muốn bình luận kèm ảnh"
+          placeholder="URL ảnh public sau khi upload hoặc dán link ảnh"
         />
+        {imageUrl ? (
+          <div className="comment-image-preview">
+            <img src={imageUrl} alt="Ảnh bình luận" />
+            <button type="button" onClick={() => setImageUrl('')}>
+              Gỡ ảnh
+            </button>
+          </div>
+        ) : null}
         <div className="comment-row">
           <select className="comment-as" value={pageId} onChange={(e) => setPageId(e.target.value)}>
             <option value="">👤 Cá nhân</option>

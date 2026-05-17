@@ -557,14 +557,18 @@ export function MonitorPage() {
   async function onProviderChange(next: string) {
     setAiProvider(next);
     setAiStatus('');
-    await api('/api/ai/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        provider: next,
-        model: (aiProviders[next] || {}).default_model || '',
-      }),
-    });
+    try {
+      await api('/api/ai/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: next,
+          model: (aiProviders[next] || {}).default_model || '',
+        }),
+      });
+    } catch {
+      setAiStatus('❌ Không kết nối được backend khi đổi AI');
+    }
   }
 
   async function saveAiKey() {
@@ -574,38 +578,55 @@ export function MonitorPage() {
     }
     setAiStatus('⏳ Đang lưu...');
     const model = (aiProviders[aiProvider] || {}).default_model || '';
-    const r = await api('/api/ai/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: aiProvider, model, key: aiKeyInput.trim() }),
-    });
-    const d = await r.json();
-    if (d.ok) {
-      setAiStatus('✅ Đã lưu key!');
-      const cRes = await api('/api/ai/config');
-      setAiConfig(await cRes.json());
-      setAiKeyEdit(false);
-      setAiKeyInput('');
-    } else setAiStatus('❌ Lỗi lưu');
+    try {
+      const r = await api('/api/ai/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: aiProvider, model, key: aiKeyInput.trim() }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setAiStatus('✅ Đã lưu key!');
+        const cRes = await api('/api/ai/config');
+        setAiConfig(await cRes.json());
+        setAiKeyEdit(false);
+        setAiKeyInput('');
+      } else setAiStatus('❌ ' + (d.error || 'Lỗi lưu key'));
+    } catch {
+      setAiStatus('❌ Không kết nối được backend. Kiểm tra Flask port 5000 và refresh lại trang.');
+    }
     setTimeout(() => setAiStatus(''), 3000);
   }
 
   async function deleteAiKey() {
     if (!confirm(`Xoá API key của ${aiProvider.toUpperCase()}?`)) return;
-    await api(`/api/ai/key/${aiProvider}`, { method: 'DELETE' });
-    setAiStatus('✅ Đã xoá key');
-    const cRes = await api('/api/ai/config');
-    setAiConfig(await cRes.json());
+    try {
+      const r = await api(`/api/ai/key/${aiProvider}`, { method: 'DELETE' });
+      const d = await r.json();
+      if (d.ok) {
+        setAiStatus('✅ Đã xoá key');
+        const cRes = await api('/api/ai/config');
+        setAiConfig(await cRes.json());
+      } else {
+        setAiStatus('❌ ' + (d.error || 'Lỗi xoá key'));
+      }
+    } catch {
+      setAiStatus('❌ Không kết nối được backend khi xoá key');
+    }
     setTimeout(() => setAiStatus(''), 3000);
   }
 
   async function saveAiAuto(next: boolean) {
     setAiAutoClassify(next);
-    await api('/api/ai/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: aiProvider, auto_classify: next }),
-    });
+    try {
+      await api('/api/ai/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: aiProvider, auto_classify: next }),
+      });
+    } catch {
+      setAiStatus('❌ Không kết nối được backend khi lưu tự động AI');
+    }
   }
 
   async function testAi() {

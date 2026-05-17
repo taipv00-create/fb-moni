@@ -179,6 +179,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .comment-textarea:focus { border-color: #1877f2; }
 .comment-image-input { width: 100%; padding: 8px 13px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 13px; font-family: inherit; outline: none; }
 .comment-image-input:focus { border-color: #1877f2; }
+.comment-file-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.btn-image-upload { display: inline-flex; align-items: center; justify-content: center; padding: 7px 12px; border-radius: 999px; border: 1.5px solid #e4e6eb; font-size: 12px; font-weight: 700; color: #1877f2; cursor: pointer; background: white; }
+.btn-image-upload input { display: none; }
+.comment-file-hint { font-size: 11px; color: #65676b; }
+.comment-image-preview { display: none; align-items: center; gap: 8px; border: 1px solid #e4e6eb; border-radius: 12px; padding: 8px; background: #f8fafc; }
+.comment-image-preview img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; background: #e4e6eb; }
+.comment-image-preview button { border: none; background: #fee2e2; color: #b91c1c; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 700; cursor: pointer; }
 .comment-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .comment-as { padding: 6px 10px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 12px; background: white; flex: 1; min-width: 130px; outline: none; cursor: pointer; }
 .btn-send { padding: 7px 18px; border-radius: 20px; border: none; background: #1877f2; color: white; font-size: 13px; font-weight: 600; cursor: pointer; }
@@ -837,7 +844,7 @@ function renderPost(post) {
   const shares     = post.shares?.count || 0;
   const cData      = post.comments || {};
   const cList      = cData.data || [];
-  const cCount     = cData.summary?.total_count || 0;
+  const cCount     = cData.summary?.total_count ?? (cData.data || []).length;
   const text       = post.message || '';
   const long       = text.length > 300;
   const pid        = (post.id.split('_')[1] || post.id);
@@ -845,7 +852,10 @@ function renderPost(post) {
   const gName      = (gid && groupNames[gid]) ? groupNames[gid] : gid;
   const postLeads  = leads[post.id] || [];
   const postReply  = replySuggestions[post.id];
-  const postSummary = commentSummaries[post.id];
+  const savedSummary = commentSummaries[post.id];
+  const postSummary = savedSummary && !(((savedSummary.fetched_comment_count || 0) === 0) && cCount > 0)
+    ? savedSummary
+    : null;
 
   // Attachments
   const atts = (post.attachments || {}).data || [];
@@ -949,7 +959,17 @@ function renderPost(post) {
   </div>
   <div class="comment-box" data-post="${post.id}" data-group="${gid}" data-url="${esc(post.permalink_url || '')}">
     <textarea class="comment-textarea" rows="2" placeholder="Nhập bình luận..."></textarea>
+    <div class="comment-file-row">
+      <label class="btn-image-upload">📎 Upload ảnh
+        <input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onchange="uploadCommentImage(this)">
+      </label>
+      <span class="comment-file-hint">JPG, PNG, WEBP, GIF tối đa 8MB</span>
+    </div>
     <input class="comment-image-input" placeholder="URL ảnh public nếu muốn bình luận kèm ảnh">
+    <div class="comment-image-preview">
+      <img alt="Ảnh bình luận">
+      <button type="button" onclick="clearCommentImage(this)">Gỡ ảnh</button>
+    </div>
     <div class="comment-row">
       <select class="comment-as"><option value="">👤 Cá nhân</option></select>
       <button class="btn-send" onclick="sendComment(this)">Gửi</button>
@@ -977,6 +997,45 @@ function toggleCmtBox(btn) {
   }
 }
 
+function setCommentImagePreview(box, imageUrl) {
+  const imgInp = box.querySelector('.comment-image-input');
+  const preview = box.querySelector('.comment-image-preview');
+  const img = preview ? preview.querySelector('img') : null;
+  if (imgInp) imgInp.value = imageUrl || '';
+  if (preview && img) {
+    preview.style.display = imageUrl ? 'flex' : 'none';
+    img.src = imageUrl || '';
+  }
+}
+
+function clearCommentImage(btn) {
+  const box = btn.closest('.comment-box');
+  if (box) setCommentImagePreview(box, '');
+}
+
+async function uploadCommentImage(input) {
+  const file = input.files && input.files[0];
+  const box = input.closest('.comment-box');
+  const result = box.querySelector('.comment-msg-result');
+  if (!file || !box) return;
+  result.textContent = '⏳ Đang upload ảnh...';
+  const fd = new FormData();
+  fd.append('image', file);
+  try {
+    const r = await fetch('/api/uploads/comment-image', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.ok && d.image_url) {
+      setCommentImagePreview(box, d.image_url);
+      result.textContent = '✅ Đã upload ảnh';
+    } else {
+      result.textContent = '❌ ' + (d.error || 'Upload ảnh lỗi');
+    }
+  } catch {
+    result.textContent = '❌ Lỗi upload ảnh';
+  }
+  input.value = '';
+}
+
 // ── Comment send ───────────────────────────────────────
 async function sendComment(btn) {
   const box     = btn.closest('.comment-box');
@@ -1000,7 +1059,7 @@ async function sendComment(btn) {
     const d = await r.json();
     if (d.ok) {
       ta.value='';
-      if (imgInp) imgInp.value = '';
+      setCommentImagePreview(box, '');
       result.textContent = image_url
         ? '✅ Đã bình luận kèm ảnh!'
         : (d.log_storage === 'supabase' ? '✅ Đã bình luận và lưu Supabase!' : '✅ Đã bình luận, log lưu local!');

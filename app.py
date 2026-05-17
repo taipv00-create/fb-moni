@@ -7,10 +7,12 @@ import hashlib
 import secrets
 import requests as _req
 from datetime import datetime, time, timezone
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request, session
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
 from core.group_api import FacebookGroupAPI, load_token, load_cookie, refresh_token
 from core.ai_classifier import AIClassifier, DEFAULT_MODEL, DEFAULT_API_KEY, DEFAULT_CATEGORIES, PROVIDERS
@@ -49,7 +51,15 @@ SUPABASE_REPLY_TABLE = os.environ.get('SUPABASE_REPLY_TABLE', 'ai_reply_suggesti
 SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_profiles')
 SUPABASE_COMMENT_LOG_TABLE = os.environ.get('SUPABASE_COMMENT_LOG_TABLE', 'comment_logs')
 SUPABASE_COMMENT_SUMMARY_TABLE = os.environ.get('SUPABASE_COMMENT_SUMMARY_TABLE', 'post_comment_summaries')
+SUPABASE_COMMENT_IMAGE_BUCKET = os.environ.get('SUPABASE_COMMENT_IMAGE_BUCKET', 'comment-images')
 APP_TIMEZONE = os.environ.get('APP_TIMEZONE', 'Asia/Ho_Chi_Minh')
+MAX_COMMENT_IMAGE_BYTES = int(os.environ.get('MAX_COMMENT_IMAGE_BYTES', 8 * 1024 * 1024))
+ALLOWED_COMMENT_IMAGE_TYPES = {
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+}
 
 app = Flask(__name__, template_folder='views')
 app.secret_key = os.environ.get('APP_SECRET_KEY', 'fb-moni-local-dev-secret-change-me')
@@ -565,6 +575,64 @@ def _save_comment_summary_to_supabase(summary: dict) -> tuple[bool, str]:
         return False, str(e)[:300]
 
 
+def _upload_comment_image_to_supabase(file_storage) -> tuple[str, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return '', 'Chưa cấu hình Supabase'
+    if not file_storage or not file_storage.filename:
+        return '', 'Chưa chọn file ảnh'
+
+    content_type = (file_storage.mimetype or '').lower()
+    if content_type not in ALLOWED_COMMENT_IMAGE_TYPES:
+        return '', 'Chỉ hỗ trợ ảnh JPG, PNG, WEBP hoặc GIF'
+
+    content = file_storage.read()
+    if not content:
+        return '', 'File ảnh rỗng'
+    if len(content) > MAX_COMMENT_IMAGE_BYTES:
+        return '', f'Ảnh quá lớn, tối đa {MAX_COMMENT_IMAGE_BYTES // (1024 * 1024)}MB'
+
+    original = secure_filename(file_storage.filename or 'comment-image')
+    _, original_ext = os.path.splitext(original)
+    ext = original_ext.lower() if original_ext.lower() in {'.jpg', '.jpeg', '.png', '.webp', '.gif'} else ALLOWED_COMMENT_IMAGE_TYPES[content_type]
+    if ext == '.jpeg':
+        ext = '.jpg'
+
+    staff_id = _current_staff_id() or 'anonymous'
+    try:
+        tz = ZoneInfo(APP_TIMEZONE)
+    except Exception:
+        tz = ZoneInfo('Asia/Ho_Chi_Minh')
+    today = datetime.now(tz).strftime('%Y/%m/%d')
+    object_path = f'{today}/{staff_id}/{uuid.uuid4().hex}{ext}'
+    upload_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/{SUPABASE_COMMENT_IMAGE_BUCKET}/{object_path}"
+
+    try:
+        resp = _req.post(
+            upload_url,
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+                'Content-Type': content_type,
+                'x-upsert': 'false',
+            },
+            data=content,
+            timeout=60,
+        )
+        if resp.status_code not in (200, 201):
+            message = resp.text[:300]
+            if resp.headers.get('content-type', '').startswith('application/json'):
+                try:
+                    message = resp.json().get('message') or message
+                except Exception:
+                    pass
+            return '', message
+        public_path = quote(object_path, safe='/')
+        public_url = f"{SUPABASE_URL.rstrip('/')}/storage/v1/object/public/{SUPABASE_COMMENT_IMAGE_BUCKET}/{public_path}"
+        return public_url, ''
+    except Exception as e:
+        return '', str(e)[:300]
+
+
 def _record_comment_log(post_id: str, group_id: str, post_url: str, message: str, page_id: str,
                         status: str, comment_id: str = '', error_message: str = '', image_url: str = '') -> dict:
     global _comment_logs
@@ -693,6 +761,8 @@ def get_api(group_id: str) -> FacebookGroupAPI:
 
 @app.before_request
 def _require_auth_for_api():
+    if request.method == 'OPTIONS':
+        return None
     public_endpoints = {'auth_status', 'auth_login', 'auth_setup'}
     if request.path.startswith('/api/') and request.endpoint not in public_endpoints:
         if _setup_required():
@@ -901,6 +971,15 @@ def api_pages():
         return jsonify([{'id': p['id'], 'name': p['name']} for p in pages])
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/uploads/comment-image', methods=['POST'])
+def upload_comment_image():
+    file_storage = request.files.get('image')
+    image_url, error = _upload_comment_image_to_supabase(file_storage)
+    if not image_url:
+        return jsonify({'ok': False, 'error': error or 'Upload ảnh thất bại'}), 400
+    return jsonify({'ok': True, 'image_url': image_url})
 
 
 @app.route('/api/comment', methods=['POST'])

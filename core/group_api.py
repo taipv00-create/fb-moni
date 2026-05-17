@@ -10,6 +10,14 @@ FB_CLIENT_ID = '350685531728'
 GRAPH_URL = 'https://graph.facebook.com/v21.0'
 
 
+def _post_object_id(post_id: str) -> str:
+    """Facebook feed IDs are often group_id_post_id, while comment edges need post_id."""
+    post_id = str(post_id or '').strip()
+    if '_' in post_id:
+        return post_id.rsplit('_', 1)[-1]
+    return post_id
+
+
 def load_token(token_file: str = None) -> Optional[str]:
     token_file = token_file or TOKEN_FILE
     if not os.path.exists(token_file):
@@ -70,7 +78,39 @@ class FacebookGroupAPI:
             'fields': 'id,message,from,created_time,updated_time,is_hidden,permalink_url,attachments,comments.limit(50).summary(true){id,message,from,created_time},reactions.limit(0).summary(true),shares',
             'limit': limit,
         })
-        return data.get('data') if data else None
+        posts = data.get('data') if data else None
+        if not posts:
+            return posts
+        for post in posts:
+            self._fill_post_engagement(post)
+        return posts
+
+    def _fill_post_engagement(self, post: Dict) -> None:
+        comments = post.get('comments') or {}
+        has_comment_count = isinstance(comments.get('summary'), dict) and comments.get('summary', {}).get('total_count') is not None
+        if has_comment_count or not post.get('id'):
+            return
+
+        object_id = _post_object_id(post.get('id', ''))
+        if not object_id or object_id == post.get('id'):
+            return
+        data = self._call('get', f'{GRAPH_URL}/{object_id}', params={
+            'fields': 'comments.limit(50).summary(true){id,message,from,created_time,attachment},reactions.limit(0).summary(true),shares',
+        })
+        if not data or data.get('error'):
+            return
+
+        fb_comments = data.get('comments')
+        if isinstance(fb_comments, dict):
+            if not isinstance(fb_comments.get('summary'), dict):
+                fb_comments['summary'] = {}
+            if fb_comments['summary'].get('total_count') is None:
+                fb_comments['summary']['total_count'] = len(fb_comments.get('data') or [])
+            post['comments'] = fb_comments
+        if data.get('reactions'):
+            post['reactions'] = data['reactions']
+        if data.get('shares'):
+            post['shares'] = data['shares']
 
     def create_post(self, message: str, page_token: str = None) -> Optional[dict]:
         token = page_token or self.access_token
@@ -101,13 +141,18 @@ class FacebookGroupAPI:
         comments: List[Dict] = []
         fields = 'id,message,from,created_time,attachment,comments.limit(50).summary(true){id,message,from,created_time,attachment}'
         page_limit = min(max(limit, 1), 100)
-        data = self._call('get', f'{GRAPH_URL}/{post_id}/comments', params={
+        params = {
             'fields': fields,
             'limit': page_limit,
             'summary': 'true',
             'filter': 'stream',
-        })
+        }
+        data = self._call('get', f'{GRAPH_URL}/{post_id}/comments', params=dict(params))
+        if data and data.get('error') and '_' in str(post_id):
+            data = self._call('get', f'{GRAPH_URL}/{_post_object_id(post_id)}/comments', params=dict(params))
         if data is None:
+            return None
+        if data.get('error'):
             return None
 
         total_count = ((data.get('summary') or {}).get('total_count') or 0)
