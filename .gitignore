@@ -10,3 +10,4 @@ data/ai_config.json
 data/staff_cookies.json
 data/staff_tokens/
 data/comment_logs.json
+data/comment_summaries.json

@@ -131,6 +131,40 @@ Trả về JSON object có đúng các trường:
 
 CHỈ trả về JSON object."""
 
+COMMENT_SUMMARY_PROMPT = """Bạn là AI phân tích một bài viết Facebook và toàn bộ bình luận đã tải được.
+
+Mục tiêu:
+- Đọc nội dung bài viết và các bình luận.
+- Tóm tắt khách đang quan tâm gì, hỏi gì, phản ứng thế nào.
+- Thống kê dựa trên dữ liệu được cung cấp, không bịa số lượng.
+- Tách các ý có ích cho sale: nhu cầu, câu hỏi lặp lại, lead tiềm năng, việc nên làm tiếp theo.
+- Không dùng markdown. Không giải thích ngoài JSON.
+
+Dữ liệu:
+{context}
+
+Trả về JSON object có đúng các trường:
+{{
+  "summary": "tóm tắt ngắn 2-4 câu",
+  "sentiment": "positive|neutral|negative|mixed|unknown",
+  "urgency": "low|medium|high",
+  "main_topics": ["chủ đề chính"],
+  "customer_intents": [
+    {{ "intent": "hỏi giá|cần tư vấn|muốn mua|hỏi địa điểm|hỏi cách làm|khiếu nại|khác", "count": 0, "evidence": "bằng chứng ngắn" }}
+  ],
+  "top_questions": ["câu hỏi/vấn đề được hỏi nhiều"],
+  "notable_comments": [
+    {{ "author": "tên người bình luận", "text": "nội dung comment", "reason": "vì sao đáng chú ý" }}
+  ],
+  "lead_signals": [
+    {{ "author": "tên nếu có", "need": "nhu cầu", "evidence": "comment liên quan" }}
+  ],
+  "recommended_action": "việc sale nên làm tiếp theo",
+  "spam_or_noise_count": 0
+}}
+
+CHỈ trả về JSON object."""
+
 
 def normalize_phone(raw: str) -> str:
     digits = re.sub(r'\D', '', raw or '')
@@ -336,6 +370,22 @@ class AIClassifier:
             print(f'AI business text error: {e}')
             return {}
 
+    def summarize_post_comments(self, post: Dict, comments: List[Dict], total_count: int = 0) -> Dict:
+        """Summarize a post and the comments fetched from Facebook."""
+        if not post or not self.api_key:
+            return {}
+        total_count = int(total_count or len(comments or []))
+        context = self._format_comment_summary_context(post, comments or [], total_count)
+        prompt = COMMENT_SUMMARY_PROMPT.format(context=context)
+        try:
+            resp = self._call_api(prompt)
+            self.last_error = ''
+            return self._parse_comment_summary_response(resp, post, comments or [], total_count)
+        except Exception as e:
+            self.last_error = str(e)
+            print(f'AI comment summary error: {e}')
+            return {}
+
     def _format_lead_posts(self, posts: List[Dict]) -> tuple[str, Dict[str, Dict]]:
         blocks = []
         source_meta: Dict[str, Dict] = {}
@@ -444,6 +494,102 @@ class AIClassifier:
                 f'  TEXT: {_compact_text(ctext, 650) or "[Không có nội dung]"}',
             ])
         return '\n'.join(lines), source_meta
+
+    def _format_comment_summary_context(self, post: Dict, comments: List[Dict], total_count: int) -> str:
+        pid = str(post.get('id') or '')
+        gid = str(post.get('_group_id') or '')
+        author = (post.get('from') or {}).get('name', 'Ẩn danh')
+        text = post.get('message', '') or ''
+        lines = [
+            f'POST_ID: {pid}',
+            f'GROUP_ID: {gid}',
+            f'POST_AUTHOR: {author}',
+            f'POST_TEXT: {_compact_text(text, 1800) or "[Không có nội dung]"}',
+            f'FACEBOOK_COMMENT_COUNT: {total_count}',
+            f'FETCHED_COMMENT_COUNT: {len(comments)}',
+            'COMMENTS:',
+        ]
+        if not comments:
+            lines.append('- [Không có bình luận được tải]')
+        for idx, comment in enumerate(comments, 1):
+            cname = (comment.get('from') or {}).get('name', 'Ẩn danh')
+            ctext = comment.get('message', '') or ''
+            created = comment.get('created_time') or ''
+            cid = comment.get('id') or f'{pid}:comment:{idx}'
+            attachment = (comment.get('attachment') or {}).get('type') or ''
+            lines.extend([
+                f'- COMMENT {idx}',
+                f'  COMMENT_ID: {cid}',
+                f'  AUTHOR: {cname}',
+                f'  CREATED_TIME: {created}',
+                f'  ATTACHMENT: {attachment}',
+                f'  TEXT: {_compact_text(ctext, 450) or "[Không có nội dung]"}',
+            ])
+            replies = ((comment.get('comments') or {}).get('data') or [])[:30]
+            for ridx, reply in enumerate(replies, 1):
+                rname = (reply.get('from') or {}).get('name', 'Ẩn danh')
+                rtext = reply.get('message', '') or ''
+                lines.extend([
+                    f'  - REPLY {ridx}',
+                    f'    AUTHOR: {rname}',
+                    f'    TEXT: {_compact_text(rtext, 300) or "[Không có nội dung]"}',
+                ])
+        return '\n'.join(lines)
+
+    def _parse_comment_summary_response(self, text: str, post: Dict, comments: List[Dict], total_count: int) -> Dict:
+        payload = _load_json_payload(text)
+        if not isinstance(payload, dict):
+            return {}
+
+        def list_of_text(name: str, limit: int) -> List[str]:
+            value = payload.get(name) or []
+            if not isinstance(value, list):
+                return []
+            return [_compact_text(str(item), limit) for item in value[:12] if str(item or '').strip()]
+
+        def list_of_dict(name: str, allowed: List[str], limit: int = 10) -> List[Dict]:
+            value = payload.get(name) or []
+            if not isinstance(value, list):
+                return []
+            rows = []
+            for item in value[:limit]:
+                if not isinstance(item, dict):
+                    continue
+                row = {}
+                for key in allowed:
+                    if key == 'count':
+                        row[key] = max(0, int(_as_float(item.get(key), 0)))
+                    else:
+                        row[key] = _compact_text(str(item.get(key) or ''), 320)
+                if any(str(v or '').strip() for k, v in row.items() if k != 'count'):
+                    rows.append(row)
+            return rows
+
+        authors = {
+            ((comment.get('from') or {}).get('name') or '').strip()
+            for comment in comments
+            if ((comment.get('from') or {}).get('name') or '').strip()
+        }
+        return {
+            'post_id': str(post.get('id') or ''),
+            'group_id': str(post.get('_group_id') or ''),
+            'post_url': str(post.get('permalink_url') or ''),
+            'post_author': _compact_text(str((post.get('from') or {}).get('name') or 'Ẩn danh'), 120),
+            'post_text': _compact_text(str(post.get('message') or ''), 2000),
+            'comment_count': int(total_count or len(comments)),
+            'fetched_comment_count': len(comments),
+            'comment_authors_count': len(authors),
+            'summary': _compact_text(str(payload.get('summary') or ''), 1200),
+            'sentiment': str(payload.get('sentiment') or 'unknown')[:30],
+            'urgency': str(payload.get('urgency') or 'low')[:20],
+            'main_topics': list_of_text('main_topics', 120),
+            'customer_intents': list_of_dict('customer_intents', ['intent', 'count', 'evidence'], 8),
+            'top_questions': list_of_text('top_questions', 220),
+            'notable_comments': list_of_dict('notable_comments', ['author', 'text', 'reason'], 8),
+            'lead_signals': list_of_dict('lead_signals', ['author', 'need', 'evidence'], 10),
+            'recommended_action': _compact_text(str(payload.get('recommended_action') or ''), 500),
+            'spam_or_noise_count': max(0, int(_as_float(payload.get('spam_or_noise_count'), 0))),
+        }
 
     def _parse_leads_response(self, text: str, source_meta: Dict[str, Dict]) -> List[Dict]:
         payload = _load_json_payload(text)

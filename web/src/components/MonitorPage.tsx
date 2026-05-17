@@ -1,10 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AuthPanel } from '@/components/AuthPanel';
 import { PostCard } from '@/components/PostCard';
 import { SaleSetupPanel } from '@/components/SaleSetupPanel';
 import { api } from '@/lib/api';
-import type { FbPage, FbPost, GroupRow, Lead, ReplySuggestion } from '@/lib/types';
+import type { CommentSummary, FbPage, FbPost, GroupRow, Lead, ReplySuggestion, StaffAccount } from '@/lib/types';
 import { extractSlug } from '@/lib/utils';
 
 type AiProviders = Record<string, { default_model?: string }>;
@@ -30,6 +31,7 @@ export function MonitorPage() {
   const [classifications, setClassifications] = useState<Record<string, string>>({});
   const [leads, setLeads] = useState<Record<string, Lead[]>>({});
   const [replySuggestions, setReplySuggestions] = useState<Record<string, ReplySuggestion>>({});
+  const [commentSummaries, setCommentSummaries] = useState<Record<string, CommentSummary>>({});
   const [leadsBusy, setLeadsBusy] = useState(false);
   const [aiProviders, setAiProviders] = useState<AiProviders>({});
   const [aiConfig, setAiConfig] = useState<AiConfig>({});
@@ -38,6 +40,15 @@ export function MonitorPage() {
   const [aiKeyInput, setAiKeyInput] = useState('');
   const [aiKeyEdit, setAiKeyEdit] = useState(false);
   const [aiStatus, setAiStatus] = useState('');
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+  const [setupRequired, setSetupRequired] = useState(false);
+  const [authStatus, setAuthStatus] = useState('');
+  const [currentStaff, setCurrentStaff] = useState<StaffAccount | null>(null);
+  const [staffRows, setStaffRows] = useState<StaffAccount[]>([]);
+  const [canManageStaff, setCanManageStaff] = useState(false);
+  const [staffStatus, setStaffStatus] = useState('');
+  const [todayCommentCount, setTodayCommentCount] = useState<number | null>(null);
 
   const [limit, setLimit] = useState(10);
   const [intervalMin, setIntervalMin] = useState(5);
@@ -79,6 +90,49 @@ export function MonitorPage() {
   useEffect(() => {
     autoOnRef.current = autoOn;
   }, [autoOn]);
+
+  const checkAuth = useCallback(async () => {
+    try {
+      const r = await api('/api/auth/status');
+      const d = await r.json();
+      setSetupRequired(!!d.setup_required);
+      setAuthenticated(!!d.authenticated);
+      setCurrentStaff(d.staff || null);
+      setAuthStatus('');
+    } catch {
+      setSetupRequired(false);
+      setAuthenticated(false);
+      setCurrentStaff(null);
+      setAuthStatus('Không kết nối được server');
+    } finally {
+      setAuthChecked(true);
+    }
+  }, []);
+
+  const loadStaffCookies = useCallback(async () => {
+    try {
+      const r = await api('/api/staff-cookies');
+      const d = await r.json();
+      setStaffRows(d.staff || []);
+      setCanManageStaff(!!d.can_manage);
+    } catch {
+      setStaffStatus('Không tải được cookie nhân sự');
+    }
+  }, []);
+
+  const loadTodayCommentStats = useCallback(async () => {
+    try {
+      const r = await api('/api/comment-stats/today');
+      const d = await r.json();
+      if (d.ok) setTodayCommentCount(d.success_count ?? 0);
+    } catch {
+      setTodayCommentCount(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkAuth();
+  }, [checkAuth]);
 
   const loadPages = useCallback(async () => {
     try {
@@ -187,6 +241,7 @@ export function MonitorPage() {
   const catOptions = [...new Set(Object.values(classifications))].sort();
 
   useEffect(() => {
+    if (!authChecked || !authenticated) return;
     let cancelled = false;
     (async () => {
       try {
@@ -202,12 +257,13 @@ export function MonitorPage() {
 
       let autoClassify = false;
       try {
-        const [pRes, cRes, clRes, lRes, rsRes] = await Promise.all([
+        const [pRes, cRes, clRes, lRes, rsRes, csRes] = await Promise.all([
           api('/api/ai/providers'),
           api('/api/ai/config'),
           api('/api/ai/classifications'),
           api('/api/ai/leads'),
           api('/api/ai/reply-suggestions'),
+          api('/api/ai/comment-summaries'),
         ]);
         if (cancelled) return;
         setAiProviders(await pRes.json());
@@ -219,6 +275,7 @@ export function MonitorPage() {
         setClassifications(await clRes.json());
         setLeads(await lRes.json());
         setReplySuggestions(await rsRes.json());
+        setCommentSummaries(await csRes.json());
       } catch {
         /* ignore */
       }
@@ -240,8 +297,8 @@ export function MonitorPage() {
       setGroups(gIds);
       setGroupNames((prev) => ({ ...prev, ...gn }));
 
-      await Promise.all(gIds.map((g) => loadGroupName(g)));
-      await Promise.all(
+      await Promise.allSettled(gIds.map((g) => loadGroupName(g)));
+      await Promise.allSettled(
         gIds.map((g) =>
           api('/api/groups', {
             method: 'POST',
@@ -252,6 +309,8 @@ export function MonitorPage() {
       );
       await loadTg();
       await loadPages();
+      await loadStaffCookies();
+      await loadTodayCommentStats();
 
       const posts = await loadPosts();
       if (cancelled) return;
@@ -274,7 +333,7 @@ export function MonitorPage() {
     return () => {
       cancelled = true;
     };
-  }, [loadGroupName, loadPages, loadPosts, loadTg]);
+  }, [authChecked, authenticated, loadGroupName, loadPages, loadPosts, loadStaffCookies, loadTg, loadTodayCommentStats]);
 
   useEffect(() => {
     if (autoTimerRef.current) {
@@ -585,6 +644,36 @@ export function MonitorPage() {
     setTimeout(() => setAiStatus(''), 7000);
   }, []);
 
+  const summarizeComments = useCallback(async (post: FbPost) => {
+    setAiStatus('AI đang đọc toàn bộ bình luận của bài viết...');
+    try {
+      const r = await api('/api/ai/summarize-comments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post, force: true }),
+      });
+      const d = await r.json();
+      if (d.ok && post.id) {
+        setCommentSummaries((prev) => ({
+          ...prev,
+          [post.id]: { ...d.summary, storage: d.storage, warning: d.warning || '' },
+        }));
+        const count = d.summary?.comment_count ?? 0;
+        const fetched = d.summary?.fetched_comment_count ?? 0;
+        setAiStatus(
+          d.storage === 'supabase'
+            ? `✅ Đã đọc ${fetched}/${count} comment và lưu Supabase`
+            : `✅ Đã đọc ${fetched}/${count} comment, lưu local`,
+        );
+      } else {
+        setAiStatus(`❌ ${d.error || 'AI chưa tóm tắt được bình luận'}`);
+      }
+    } catch {
+      setAiStatus('❌ Lỗi kết nối server');
+    }
+    setTimeout(() => setAiStatus(''), 9000);
+  }, []);
+
   async function extractLeadsAll() {
     if (!allPosts.length) return;
     setLeadsBusy(true);
@@ -633,8 +722,142 @@ export function MonitorPage() {
     }
   }
 
+  async function login(username: string, password: string) {
+    setAuthStatus('Đang đăng nhập...');
+    try {
+      const r = await api('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setAuthenticated(true);
+        setSetupRequired(false);
+        setCurrentStaff(d.staff || null);
+        setAuthStatus('');
+        await loadStaffCookies();
+        await loadTodayCommentStats();
+      } else {
+        setAuthStatus(d.error || 'Sai tài khoản hoặc mật khẩu');
+      }
+    } catch {
+      setAuthStatus('Lỗi kết nối server');
+    }
+  }
+
+  async function setupFirstAccount(payload: { name: string; username: string; password: string; cookie: string }) {
+    setAuthStatus('Đang tạo tài khoản...');
+    try {
+      const r = await api('/api/auth/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setAuthenticated(true);
+        setSetupRequired(false);
+        setCurrentStaff(d.staff || null);
+        setAuthStatus('');
+        await loadStaffCookies();
+        await loadTodayCommentStats();
+      } else {
+        setAuthStatus(d.error || 'Lỗi setup');
+      }
+    } catch {
+      setAuthStatus('Lỗi kết nối server');
+    }
+  }
+
+  async function logout() {
+    await api('/api/auth/logout', { method: 'POST' });
+    setAuthenticated(false);
+    setCurrentStaff(null);
+    setStaffRows([]);
+    setAllPosts([]);
+    setHeaderSub('Đã đăng xuất');
+  }
+
+  async function addStaffCookie(payload: { name: string; username: string; password: string; cookie: string }) {
+    if (!payload.name.trim() || !payload.username.trim() || !payload.password || !payload.cookie.trim()) {
+      setStaffStatus('Nhập đủ tên, tài khoản, mật khẩu và cookie');
+      return;
+    }
+    setStaffStatus('Đang lưu cookie...');
+    try {
+      const r = await api('/api/staff-cookies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setStaffRows(d.staff || []);
+        setCanManageStaff(!!d.can_manage);
+        setStaffStatus('✅ Đã lưu cookie nhân sự');
+      } else {
+        setStaffStatus('❌ ' + (d.error || 'Lỗi lưu cookie'));
+      }
+    } catch {
+      setStaffStatus('❌ Lỗi kết nối');
+    }
+  }
+
+  async function deleteStaffCookie(staffId: string) {
+    if (!confirm('Xoá cookie nhân sự này?')) return;
+    setStaffStatus('Đang xoá...');
+    try {
+      const r = await api(`/api/staff-cookies/${staffId}`, { method: 'DELETE' });
+      const d = await r.json();
+      if (d.ok) {
+        setStaffRows(d.staff || []);
+        setCanManageStaff(!!d.can_manage);
+        setStaffStatus('✅ Đã xoá cookie');
+      } else {
+        setStaffStatus('❌ ' + (d.error || 'Lỗi xoá cookie'));
+      }
+    } catch {
+      setStaffStatus('❌ Lỗi kết nối');
+    }
+  }
+
   const masked = (aiConfig.keys_masked || {})[aiProvider] || '';
   const hasKey = Boolean(masked && masked !== '***' && masked.length > 3);
+
+  if (!authChecked) {
+    return (
+      <>
+        <div className="header">
+          <div className="header-icon">👥</div>
+          <div>
+            <div className="header-title">FB Group Monitor</div>
+            <div className="header-sub">Đang kiểm tra đăng nhập...</div>
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  if (setupRequired || !authenticated) {
+    return (
+      <>
+        <div className="header">
+          <div className="header-icon">👥</div>
+          <div>
+            <div className="header-title">FB Group Monitor</div>
+            <div className="header-sub">{setupRequired ? 'Cần setup tài khoản đầu tiên' : 'Vui lòng đăng nhập'}</div>
+          </div>
+        </div>
+        <AuthPanel
+          mode={setupRequired ? 'setup' : 'login'}
+          status={authStatus}
+          onLogin={login}
+          onSetup={setupFirstAccount}
+        />
+      </>
+    );
+  }
 
   return (
     <>
@@ -647,7 +870,12 @@ export function MonitorPage() {
           </div>
         </div>
         <div className="header-spacer" />
-        <div className="header-status">Một màn hình</div>
+        <div className="header-user">
+          {currentStaff?.name || currentStaff?.username} · {currentStaff?.role === 'admin' ? 'admin' : 'nhân sự'}
+        </div>
+        <button type="button" className="header-logout" onClick={() => void logout()}>
+          Đăng xuất
+        </button>
       </div>
 
       <div className="workspace">
@@ -787,6 +1015,12 @@ export function MonitorPage() {
           onTestAi={testAi}
           onSaveKey={saveAiKey}
           onDeleteKey={deleteAiKey}
+          staff={staffRows}
+          currentStaff={currentStaff}
+          canManageStaff={canManageStaff}
+          staffStatus={staffStatus}
+          onAddStaff={addStaffCookie}
+          onDeleteStaff={deleteStaffCookie}
         />
         </aside>
 
@@ -837,6 +1071,9 @@ export function MonitorPage() {
             <span className="unit">phút</span>
           </div>
           <div className="toolbar-spacer" />
+          <span className="toolbar-status">
+            ✅ Comment hôm nay: {todayCommentCount === null ? '--' : todayCommentCount}
+          </span>
           <span className="toolbar-status">{toolStatus}</span>
         </div>
 
@@ -873,7 +1110,10 @@ export function MonitorPage() {
                 pages={pages}
                 leads={leads[p.id]}
                 replySuggestion={replySuggestions[p.id]}
+                commentSummary={commentSummaries[p.id]}
                 onSuggestReply={suggestReply}
+                onSummarizeComments={summarizeComments}
+                onCommentSent={loadTodayCommentStats}
                 onOpenLightbox={setLightbox}
               />
             ))

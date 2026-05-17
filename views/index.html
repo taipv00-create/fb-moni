@@ -177,12 +177,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .comment-box.open { display: flex; }
 .comment-textarea { width: 100%; padding: 9px 13px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 13px; font-family: inherit; resize: none; min-height: 60px; outline: none; transition: border .15s; }
 .comment-textarea:focus { border-color: #1877f2; }
+.comment-image-input { width: 100%; padding: 8px 13px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 13px; font-family: inherit; outline: none; }
+.comment-image-input:focus { border-color: #1877f2; }
 .comment-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .comment-as { padding: 6px 10px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 12px; background: white; flex: 1; min-width: 130px; outline: none; cursor: pointer; }
 .btn-send { padding: 7px 18px; border-radius: 20px; border: none; background: #1877f2; color: white; font-size: 13px; font-weight: 600; cursor: pointer; }
 .btn-send:hover { background: #1464d8; }
 .btn-send:disabled { opacity: .5; cursor: not-allowed; }
 .comment-msg-result { font-size: 12px; color: #65676b; }
+.comment-summary-wrap { border-left: 3px solid #0ea5e9; }
+.summary-list { margin-top: 8px; }
+.summary-line { font-size: 12px; color: #374151; line-height: 1.45; padding: 3px 0; }
 
 /* ── Skeleton ── */
 .skeleton { background: white; border-radius: 14px; padding: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.08); }
@@ -694,6 +699,32 @@ function renderReplyBlock(postId) {
   </div>`;
 }
 
+function renderCommentSummaryBlock(postId) {
+  const item = commentSummaries[postId];
+  if (!item) return '';
+  const topics = (item.main_topics || []).join(', ');
+  const intents = (item.customer_intents || []).slice(0, 5).map(x =>
+    `<div class="summary-line"><b>${esc(x.intent || 'khác')}</b>${x.count !== undefined ? ` (${x.count})` : ''}: ${esc(x.evidence || '')}</div>`
+  ).join('');
+  const questions = (item.top_questions || []).slice(0, 5).map(x => `<div class="summary-line">${esc(x)}</div>`).join('');
+  return `<div class="reply-wrap comment-summary-wrap">
+    <div class="reply-head">
+      <span>📊 AI tóm tắt bình luận</span>
+      <span>${item.comment_count || 0} comment · đã đọc ${item.fetched_comment_count || 0}</span>
+    </div>
+    <div class="reply-meta">
+      <div><b>Tóm tắt:</b> ${esc(item.summary || 'Chưa có tóm tắt')}</div>
+      <div><b>Sắc thái:</b> ${esc(item.sentiment || 'unknown')} · <b>Mức gấp:</b> ${esc(item.urgency || 'low')} · <b>Người tham gia:</b> ${item.comment_authors_count || 0}</div>
+      ${topics ? `<div><b>Chủ đề:</b> ${esc(topics)}</div>` : ''}
+      ${item.recommended_action ? `<div><b>Việc nên làm:</b> ${esc(item.recommended_action)}</div>` : ''}
+      ${item.storage ? `<div class="reply-save-note">Đã lưu: ${item.storage === 'supabase' ? 'Supabase' : 'local'}</div>` : ''}
+      ${item.warning ? `<div class="reply-save-note">⚠️ ${esc(item.warning)}</div>` : ''}
+    </div>
+    ${intents ? `<div class="summary-list"><div class="reply-label">Ý định khách hàng</div>${intents}</div>` : ''}
+    ${questions ? `<div class="summary-list"><div class="reply-label">Câu hỏi nổi bật</div>${questions}</div>` : ''}
+  </div>`;
+}
+
 // ── State ─────────────────────────────────────────────
 let groups     = [];      // string[]  — list of group IDs
 let groupNames = {};      // {id: name}
@@ -703,6 +734,7 @@ let pages      = [];
 let allPosts   = [];
 let leads      = {};
 let replySuggestions = {};
+let commentSummaries = {};
 let businessProfile = {};
 let staffCookieRows = [];
 let activeStaffId = '';
@@ -813,6 +845,7 @@ function renderPost(post) {
   const gName      = (gid && groupNames[gid]) ? groupNames[gid] : gid;
   const postLeads  = leads[post.id] || [];
   const postReply  = replySuggestions[post.id];
+  const postSummary = commentSummaries[post.id];
 
   // Attachments
   const atts = (post.attachments || {}).data || [];
@@ -868,8 +901,12 @@ function renderPost(post) {
   const replyBadge = postReply
     ? `<span class="meta-dot"></span><span class="badge badge-reply">🤖 Có gợi ý</span>`
     : '';
+  const summaryBadge = postSummary
+    ? `<span class="meta-dot"></span><span class="badge badge-reply">📊 Đã tóm tắt</span>`
+    : '';
   const leadHtml = renderLeadBlock(post.id);
   const replyHtml = renderReplyBlock(post.id);
+  const summaryHtml = renderCommentSummaryBlock(post.id);
 
   return `<div class="card">
   <div class="card-header">
@@ -884,6 +921,7 @@ function renderPost(post) {
         ${catBadge}
         ${leadBadge}
         ${replyBadge}
+        ${summaryBadge}
       </div>
     </div>
   </div>
@@ -894,6 +932,7 @@ function renderPost(post) {
   ${attHtml ? `<div class="card-body" style="padding-top:0">${attHtml}</div>` : ''}
   ${leadHtml}
   ${replyHtml}
+  ${summaryHtml}
   <div class="card-stats">
     <div class="stat"><span class="stat-icon">❤️</span> ${reactions}</div>
     <div class="stat"><span class="stat-icon">💬</span> ${cCount}</div>
@@ -904,11 +943,13 @@ function renderPost(post) {
     <div class="post-link"><a href="${post.permalink_url||'#'}" target="_blank">🔗 Xem trên Facebook</a></div>
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <button class="btn-reply-ai" data-post="${esc(post.id)}" onclick="suggestReply(this)">🤖 Gợi ý trả lời</button>
+      <button class="btn-reply-ai" data-post="${esc(post.id)}" onclick="summarizeComments(this)">📊 Tóm tắt CMT</button>
       <button class="btn-write-comment" onclick="toggleCmtBox(this)">✏️ Bình luận</button>
     </div>
   </div>
   <div class="comment-box" data-post="${post.id}" data-group="${gid}" data-url="${esc(post.permalink_url || '')}">
     <textarea class="comment-textarea" rows="2" placeholder="Nhập bình luận..."></textarea>
+    <input class="comment-image-input" placeholder="URL ảnh public nếu muốn bình luận kèm ảnh">
     <div class="comment-row">
       <select class="comment-as"><option value="">👤 Cá nhân</option></select>
       <button class="btn-send" onclick="sendComment(this)">Gửi</button>
@@ -940,24 +981,29 @@ function toggleCmtBox(btn) {
 async function sendComment(btn) {
   const box     = btn.closest('.comment-box');
   const ta      = box.querySelector('.comment-textarea');
+  const imgInp  = box.querySelector('.comment-image-input');
   const sel     = box.querySelector('.comment-as');
   const result  = box.querySelector('.comment-msg-result');
   const message = ta.value.trim();
+  const image_url = imgInp ? imgInp.value.trim() : '';
   const post_id = box.dataset.post;
   const group_id= box.dataset.group;
   const post_url= box.dataset.url || '';
-  if (!message) return;
+  if (!message && !image_url) return;
   btn.disabled = true;
   result.textContent = '⏳ Đang gửi…';
   try {
     const r = await fetch('/api/comment', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ post_id, group_id, post_url, message, page_id: sel.value })
+      body: JSON.stringify({ post_id, group_id, post_url, message, image_url, page_id: sel.value })
     });
     const d = await r.json();
     if (d.ok) {
       ta.value='';
-      result.textContent = d.log_storage === 'supabase' ? '✅ Đã bình luận và lưu Supabase!' : '✅ Đã bình luận, log lưu local!';
+      if (imgInp) imgInp.value = '';
+      result.textContent = image_url
+        ? '✅ Đã bình luận kèm ảnh!'
+        : (d.log_storage === 'supabase' ? '✅ Đã bình luận và lưu Supabase!' : '✅ Đã bình luận, log lưu local!');
       await loadTodayCommentStats();
     } else {
       result.textContent = '❌ ' + (d.error||'Lỗi') + (d.log_storage ? ` · log: ${d.log_storage}` : '');
@@ -1045,6 +1091,49 @@ async function suggestReply(btn) {
   btn.disabled = false;
   btn.textContent = prev;
   setTimeout(() => { st.textContent = ''; }, 7000);
+}
+
+async function summarizeComments(btn) {
+  const postId = btn.dataset.post;
+  const post = findPost(postId);
+  const st = document.getElementById('aiStatus');
+  if (!post) return;
+
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang tóm tắt...';
+  st.textContent = 'AI đang đọc toàn bộ bình luận của bài viết...';
+  st.style.color = '#65676b';
+  try {
+    const r = await fetch('/api/ai/summarize-comments', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ post, force: true })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      commentSummaries[postId] = Object.assign({}, d.summary, {
+        storage: d.storage,
+        warning: d.warning || ''
+      });
+      applyFilter();
+      const count = d.summary?.comment_count || 0;
+      const fetched = d.summary?.fetched_comment_count || 0;
+      st.textContent = d.storage === 'supabase'
+        ? `✅ Đã đọc ${fetched}/${count} comment và lưu Supabase`
+        : `✅ Đã đọc ${fetched}/${count} comment, lưu local`;
+      st.style.color = '#16a34a';
+    } else {
+      st.textContent = '❌ ' + (d.error || 'AI chưa tóm tắt được bình luận');
+      st.style.color = '#dc2626';
+    }
+  } catch {
+    st.textContent = '❌ Lỗi kết nối server';
+    st.style.color = '#dc2626';
+  }
+  btn.disabled = false;
+  btn.textContent = prev;
+  setTimeout(() => { st.textContent = ''; }, 9000);
 }
 
 // ── Pages ──────────────────────────────────────────────
@@ -1592,18 +1681,20 @@ function catFg(cat) { return (CAT_COLORS[cat] || { fg: '#374151' }).fg; }
 
 async function loadAiConfig() {
   try {
-    const [pRes, cRes, clRes, lRes, rsRes] = await Promise.all([
+    const [pRes, cRes, clRes, lRes, rsRes, csRes] = await Promise.all([
       fetch('/api/ai/providers'),
       fetch('/api/ai/config'),
       fetch('/api/ai/classifications'),
       fetch('/api/ai/leads'),
       fetch('/api/ai/reply-suggestions'),
+      fetch('/api/ai/comment-summaries'),
     ]);
     aiProviders = await pRes.json();
     aiConfig = await cRes.json();
     classifications = await clRes.json();
     leads = await lRes.json();
     replySuggestions = await rsRes.json();
+    commentSummaries = await csRes.json();
     document.getElementById('aiProvider').value = aiConfig.provider || 'gemini';
     document.getElementById('aiAutoClassify').checked = !!aiConfig.auto_classify;
     renderKeyDisplay();

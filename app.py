@@ -32,6 +32,7 @@ BUSINESS_PROFILE_FILE = os.path.join(DATA_DIR, 'business_profile.json')
 STAFF_COOKIES_FILE = os.path.join(DATA_DIR, 'staff_cookies.json')
 STAFF_TOKEN_DIR = os.path.join(DATA_DIR, 'staff_tokens')
 COMMENT_LOGS_FILE = os.path.join(DATA_DIR, 'comment_logs.json')
+COMMENT_SUMMARIES_FILE = os.path.join(DATA_DIR, 'comment_summaries.json')
 
 BOT_TOKEN = os.environ.get('TG_BOT_TOKEN', '8724375632:AAEgyz4yRPivDYWGXesTaJHhdqWYIraSoT8')
 DEFAULT_GROUP = os.environ.get('DEFAULT_GROUP', '3809441172650624')
@@ -47,6 +48,7 @@ SUPABASE_KEY = (
 SUPABASE_REPLY_TABLE = os.environ.get('SUPABASE_REPLY_TABLE', 'ai_reply_suggestions')
 SUPABASE_PROFILE_TABLE = os.environ.get('SUPABASE_PROFILE_TABLE', 'business_profiles')
 SUPABASE_COMMENT_LOG_TABLE = os.environ.get('SUPABASE_COMMENT_LOG_TABLE', 'comment_logs')
+SUPABASE_COMMENT_SUMMARY_TABLE = os.environ.get('SUPABASE_COMMENT_SUMMARY_TABLE', 'post_comment_summaries')
 APP_TIMEZONE = os.environ.get('APP_TIMEZONE', 'Asia/Ho_Chi_Minh')
 
 app = Flask(__name__, template_folder='views')
@@ -60,7 +62,7 @@ _cors_origins = [
     ).split(',')
     if o.strip()
 ]
-CORS(app, resources={r'/api/*': {'origins': _cors_origins}})
+CORS(app, resources={r'/api/*': {'origins': _cors_origins, 'supports_credentials': True}})
 
 # ── State ──────────────────────────────────────────────
 _api_cache: dict = {}
@@ -76,6 +78,7 @@ _reply_suggestions: dict = {}  # {post_id: latest suggestion}
 _business_profile: dict = {}  # {business_name, phone, address, why_choose_us, extra_notes}
 _staff_cookies: dict = {}  # {active_staff_id, staff: [{id, name, cookie, enabled}]}
 _comment_logs: list = []
+_comment_summaries: dict = {}
 
 
 def _default_business_profile() -> dict:
@@ -135,7 +138,7 @@ def _verify_password(password: str, salt: str, digest: str) -> bool:
 
 
 def _load_state():
-    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs
+    global _seen_ids, _tg_chat_ids, _groups, _settings, _ai_config, _classifications, _leads, _reply_suggestions, _business_profile, _staff_cookies, _comment_logs, _comment_summaries
     os.makedirs(DATA_DIR, exist_ok=True)
 
     loaded_from_supabase = False
@@ -193,6 +196,9 @@ def _load_state():
     _comment_logs = _read_json(COMMENT_LOGS_FILE, [])
     if not isinstance(_comment_logs, list):
         _comment_logs = []
+    _comment_summaries = _read_json(COMMENT_SUMMARIES_FILE, {})
+    if not isinstance(_comment_summaries, dict):
+        _comment_summaries = {}
 
 
 def _save_seen(new_posts=None):
@@ -261,6 +267,11 @@ def _save_staff_cookies():
 def _save_comment_logs():
     with open(COMMENT_LOGS_FILE, 'w') as f:
         json.dump(_comment_logs[-1000:], f, ensure_ascii=False)
+
+
+def _save_comment_summaries():
+    with open(COMMENT_SUMMARIES_FILE, 'w', encoding='utf-8') as f:
+        json.dump(_comment_summaries, f, ensure_ascii=False)
 
 
 def _extract_cookie_user(cookie: str) -> str:
@@ -482,6 +493,7 @@ def _save_comment_log_to_supabase(log: dict) -> tuple[bool, str]:
         'group_id': log.get('group_id', ''),
         'post_url': log.get('post_url', ''),
         'comment_text': log.get('comment_text', ''),
+        'comment_image_url': log.get('comment_image_url', ''),
         'comment_id': log.get('comment_id', ''),
         'page_id': log.get('page_id', ''),
         'status': log.get('status', ''),
@@ -507,8 +519,54 @@ def _save_comment_log_to_supabase(log: dict) -> tuple[bool, str]:
         return False, str(e)[:300]
 
 
+def _save_comment_summary_to_supabase(summary: dict) -> tuple[bool, str]:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False, 'Chưa cấu hình Supabase'
+    payload = {
+        'post_id': summary.get('post_id', ''),
+        'group_id': summary.get('group_id', ''),
+        'post_url': summary.get('post_url', ''),
+        'post_author': summary.get('post_author', ''),
+        'post_text': summary.get('post_text', ''),
+        'comment_count': summary.get('comment_count', 0),
+        'fetched_comment_count': summary.get('fetched_comment_count', 0),
+        'comment_authors_count': summary.get('comment_authors_count', 0),
+        'summary': summary.get('summary', ''),
+        'sentiment': summary.get('sentiment', ''),
+        'urgency': summary.get('urgency', ''),
+        'main_topics': summary.get('main_topics', []),
+        'customer_intents': summary.get('customer_intents', []),
+        'top_questions': summary.get('top_questions', []),
+        'notable_comments': summary.get('notable_comments', []),
+        'lead_signals': summary.get('lead_signals', []),
+        'recommended_action': summary.get('recommended_action', ''),
+        'spam_or_noise_count': summary.get('spam_or_noise_count', 0),
+        'raw_ai': summary,
+        'created_by_staff_id': summary.get('created_by_staff_id', ''),
+        'created_by_staff_name': summary.get('created_by_staff_name', ''),
+        'created_at': summary.get('created_at'),
+    }
+    try:
+        resp = _req.post(
+            f"{SUPABASE_URL.rstrip('/')}/rest/v1/{SUPABASE_COMMENT_SUMMARY_TABLE}",
+            headers={
+                'apikey': SUPABASE_KEY,
+                'Authorization': f'Bearer {SUPABASE_KEY}',
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal',
+            },
+            json=payload,
+            timeout=20,
+        )
+        if resp.status_code in (200, 201, 204):
+            return True, ''
+        return False, (resp.json().get('message') if resp.headers.get('content-type', '').startswith('application/json') else resp.text)[:300]
+    except Exception as e:
+        return False, str(e)[:300]
+
+
 def _record_comment_log(post_id: str, group_id: str, post_url: str, message: str, page_id: str,
-                        status: str, comment_id: str = '', error_message: str = '') -> dict:
+                        status: str, comment_id: str = '', error_message: str = '', image_url: str = '') -> dict:
     global _comment_logs
     staff = _current_staff()
     now = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
@@ -521,6 +579,7 @@ def _record_comment_log(post_id: str, group_id: str, post_url: str, message: str
         'group_id': group_id,
         'post_url': post_url,
         'comment_text': message,
+        'comment_image_url': image_url,
         'comment_id': comment_id,
         'page_id': page_id,
         'status': status,
@@ -852,26 +911,28 @@ def api_comment():
     group_id = body.get('group_id', DEFAULT_GROUP)
     page_id = body.get('page_id', '').strip()
     post_url = body.get('post_url', '').strip()
-    if not post_id or not message:
-        return jsonify({'ok': False, 'error': 'Thiếu post_id hoặc message'}), 400
+    image_url = body.get('image_url', '').strip()
+    if not post_id or (not message and not image_url):
+        return jsonify({'ok': False, 'error': 'Thiếu post_id hoặc nội dung/ảnh bình luận'}), 400
     try:
         page_token = _pages_cache.get(page_id, {}).get('access_token') if page_id else None
-        result = get_api(group_id).post_comment(post_id, message, page_token)
+        result = get_api(group_id).post_comment(post_id, message, page_token, image_url)
         if result and 'id' in result:
-            log = _record_comment_log(post_id, group_id, post_url, message, page_id, 'success', comment_id=result['id'])
+            log_text = message or '[Bình luận bằng ảnh]'
+            log = _record_comment_log(post_id, group_id, post_url, log_text, page_id, 'success', comment_id=result['id'], image_url=image_url)
             payload = {'ok': True, 'comment_id': result['id'], 'log_storage': log.get('storage')}
             if log.get('storage_warning'):
                 payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
             return jsonify(payload)
         err = (result or {}).get('error', {}).get('message', 'Lỗi không xác định')
-        log = _record_comment_log(post_id, group_id, post_url, message, page_id, 'failed', error_message=err)
+        log = _record_comment_log(post_id, group_id, post_url, message or '[Bình luận bằng ảnh]', page_id, 'failed', error_message=err, image_url=image_url)
         payload = {'ok': False, 'error': err, 'log_storage': log.get('storage')}
         if log.get('storage_warning'):
             payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
         return jsonify(payload)
     except Exception as e:
         err = str(e)
-        log = _record_comment_log(post_id, group_id, post_url, message, page_id, 'failed', error_message=err)
+        log = _record_comment_log(post_id, group_id, post_url, message or '[Bình luận bằng ảnh]', page_id, 'failed', error_message=err, image_url=image_url)
         payload = {'ok': False, 'error': err, 'log_storage': log.get('storage')}
         if log.get('storage_warning'):
             payload['warning'] = f"Đã lưu local, Supabase chưa ghi được: {log['storage_warning']}"
@@ -1288,6 +1349,11 @@ def ai_reply_suggestions_get():
     return jsonify(_reply_suggestions)
 
 
+@app.route('/api/ai/comment-summaries', methods=['GET'])
+def ai_comment_summaries_get():
+    return jsonify(_comment_summaries)
+
+
 @app.route('/api/ai/suggest-reply', methods=['POST'])
 def ai_suggest_reply():
     global _reply_suggestions
@@ -1318,6 +1384,54 @@ def ai_suggest_reply():
         supabase_ok, supabase_error = _save_reply_suggestion_to_supabase(suggestion)
         storage = 'supabase' if supabase_ok else 'local'
         payload = {'ok': True, 'suggestion': suggestion, 'storage': storage}
+        if supabase_error:
+            payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/ai/summarize-comments', methods=['POST'])
+def ai_summarize_comments():
+    global _comment_summaries
+    try:
+        body = request.get_json() or {}
+        post = body.get('post') or {}
+        force = bool(body.get('force', True))
+        if not post or not post.get('id'):
+            return jsonify({'ok': False, 'error': 'Không có bài viết'}), 400
+        post_id = str(post.get('id'))
+        group_id = str(post.get('_group_id') or DEFAULT_GROUP)
+        if not force and post_id in _comment_summaries:
+            return jsonify({'ok': True, 'summary': _comment_summaries[post_id], 'storage': 'local'})
+
+        classifier = _get_classifier()
+        if not classifier.api_key:
+            return jsonify({'ok': False, 'error': 'Chưa cấu hình API key — thêm GEMINI_API_KEY vào .env hoặc key trong UI'}), 400
+
+        loaded = get_api(group_id).get_post_comments(post_id, limit=500)
+        if loaded is None:
+            return jsonify({'ok': False, 'error': 'Không đọc được bình luận từ Facebook. Kiểm tra cookie/quyền nhóm.'}), 502
+        comments = loaded.get('comments') or []
+        total_count = int(loaded.get('total_count') or len(comments))
+
+        post_for_ai = {**post, 'comments': {'data': comments, 'summary': {'total_count': total_count}}}
+        summary = classifier.summarize_post_comments(post_for_ai, comments, total_count)
+        if classifier.last_error and not summary:
+            return jsonify({'ok': False, 'error': classifier.last_error}), 502
+        if not summary:
+            return jsonify({'ok': False, 'error': 'AI chưa tóm tắt được bình luận'}), 502
+
+        staff = _current_staff()
+        summary['created_by_staff_id'] = staff.get('id', '')
+        summary['created_by_staff_name'] = staff.get('name', '')
+        summary['created_at'] = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        _comment_summaries[post_id] = summary
+        _save_comment_summaries()
+
+        supabase_ok, supabase_error = _save_comment_summary_to_supabase(summary)
+        storage = 'supabase' if supabase_ok else 'local'
+        payload = {'ok': True, 'summary': summary, 'storage': storage}
         if supabase_error:
             payload['warning'] = f'Đã lưu local, Supabase chưa ghi được: {supabase_error}'
         return jsonify(payload)

@@ -4,8 +4,9 @@ import React, { useState } from 'react';
 import { api } from '@/lib/api';
 import { catBg, catFg } from '@/lib/constants';
 import { LeadBlock } from '@/components/LeadBlock';
+import { CommentSummaryBlock } from '@/components/CommentSummaryBlock';
 import { ReplySuggestionBlock } from '@/components/ReplySuggestionBlock';
-import type { FbPage, FbPost, Lead, ReplySuggestion } from '@/lib/types';
+import type { CommentSummary, FbPage, FbPost, Lead, ReplySuggestion } from '@/lib/types';
 import { avatarColor, escRegex, initials, timeAgo } from '@/lib/utils';
 
 function HighlightText({ text, keywords }: { text: string; keywords: string[] }) {
@@ -51,8 +52,11 @@ export function PostCard({
   pages,
   leads,
   replySuggestion,
+  commentSummary,
   onOpenLightbox,
   onSuggestReply,
+  onSummarizeComments,
+  onCommentSent,
 }: {
   post: FbPost;
   groupNames: Record<string, string>;
@@ -61,8 +65,11 @@ export function PostCard({
   pages: FbPage[];
   leads?: Lead[];
   replySuggestion?: ReplySuggestion;
+  commentSummary?: CommentSummary;
   onOpenLightbox: (src: string) => void;
   onSuggestReply?: (post: FbPost) => Promise<void>;
+  onSummarizeComments?: (post: FbPost) => Promise<void>;
+  onCommentSent?: () => Promise<void>;
 }) {
   const authorName = post.from?.name || 'Ẩn danh';
   const reactions = post.reactions?.summary?.total_count ?? 0;
@@ -83,6 +90,8 @@ export function PostCard({
   const [sending, setSending] = useState(false);
   const [pageId, setPageId] = useState('');
   const [suggestBusy, setSuggestBusy] = useState(false);
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [imageUrl, setImageUrl] = useState('');
   const postLeads = leads || [];
 
   const atts = (post.attachments?.data || []).map((a, i) => {
@@ -122,19 +131,29 @@ export function PostCard({
   async function sendComment() {
     const ta = document.querySelector<HTMLTextAreaElement>(`textarea[data-cmt="${post.id}"]`);
     const message = ta?.value.trim() || '';
-    if (!message) return;
+    const image = imageUrl.trim();
+    if (!message && !image) return;
     setSending(true);
     setCmtMsg('⏳ Đang gửi…');
     try {
       const r = await api('/api/comment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ post_id: post.id, group_id: gid, message, page_id: pageId }),
+        body: JSON.stringify({
+          post_id: post.id,
+          group_id: gid,
+          post_url: post.permalink_url || '',
+          message,
+          image_url: image,
+          page_id: pageId,
+        }),
       });
       const d = await r.json();
       if (d.ok) {
         if (ta) ta.value = '';
-        setCmtMsg('✅ Đã bình luận!');
+        setImageUrl('');
+        setCmtMsg(image ? '✅ Đã bình luận kèm ảnh!' : '✅ Đã bình luận!');
+        await onCommentSent?.();
       } else setCmtMsg('❌ ' + (d.error || 'Lỗi'));
     } catch {
       setCmtMsg('❌ Lỗi kết nối');
@@ -185,6 +204,12 @@ export function PostCard({
               <>
                 <span className="meta-dot" />
                 <span className="badge badge-reply">🤖 Gợi ý</span>
+              </>
+            ) : null}
+            {commentSummary ? (
+              <>
+                <span className="meta-dot" />
+                <span className="badge badge-reply">📊 Đã tóm tắt</span>
               </>
             ) : null}
           </div>
@@ -243,6 +268,7 @@ export function PostCard({
       ) : null}
       <LeadBlock items={postLeads} />
       {replySuggestion ? <ReplySuggestionBlock item={replySuggestion} /> : null}
+      {commentSummary ? <CommentSummaryBlock item={commentSummary} /> : null}
       <div className="card-footer">
         <div className="post-link">
           <a href={post.permalink_url || '#'} target="_blank" rel="noreferrer">
@@ -267,6 +293,23 @@ export function PostCard({
               {suggestBusy ? '⏳ AI đang đọc...' : '🤖 Gợi ý trả lời'}
             </button>
           ) : null}
+          {onSummarizeComments ? (
+            <button
+              type="button"
+              className="btn-reply-ai"
+              disabled={summaryBusy}
+              onClick={async () => {
+                setSummaryBusy(true);
+                try {
+                  await onSummarizeComments(post);
+                } finally {
+                  setSummaryBusy(false);
+                }
+              }}
+            >
+              {summaryBusy ? '⏳ Đang tóm tắt...' : '📊 Tóm tắt CMT'}
+            </button>
+          ) : null}
           <button type="button" className="btn-write-comment" onClick={() => setCmtOpen((o) => !o)}>
             {cmtOpen ? '✖ Đóng' : '✏️ Bình luận'}
           </button>
@@ -274,6 +317,12 @@ export function PostCard({
       </div>
       <div className={`comment-box${cmtOpen ? ' open' : ''}`}>
         <textarea className="comment-textarea" rows={2} placeholder="Nhập bình luận..." data-cmt={post.id} />
+        <input
+          className="comment-image-input"
+          value={imageUrl}
+          onChange={(e) => setImageUrl(e.target.value)}
+          placeholder="URL ảnh public nếu muốn bình luận kèm ảnh"
+        />
         <div className="comment-row">
           <select className="comment-as" value={pageId} onChange={(e) => setPageId(e.target.value)}>
             <option value="">👤 Cá nhân</option>

@@ -3,5 +3,8 @@ export function getApiBase(): string {
 }
 
 export function api(path: string, init?: RequestInit): Promise<Response> {
-  return fetch(`${getApiBase()}${path}`, init);
+  return fetch(`${getApiBase()}${path}`, {
+    credentials: 'include',
+    ...init,
+  });
 }

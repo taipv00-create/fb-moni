@@ -1,6 +1,8 @@
 'use client';
 
 import { BusinessProfilePanel } from '@/components/BusinessProfilePanel';
+import { StaffCookiePanel } from '@/components/StaffCookiePanel';
+import type { StaffAccount } from '@/lib/types';
 
 type Props = {
   aiProvider: string;
@@ -17,6 +19,12 @@ type Props = {
   onTestAi: () => void;
   onSaveKey: () => void;
   onDeleteKey: () => void;
+  staff: StaffAccount[];
+  currentStaff?: StaffAccount | null;
+  canManageStaff: boolean;
+  staffStatus: string;
+  onAddStaff: (payload: { name: string; username: string; password: string; cookie: string }) => Promise<void>;
+  onDeleteStaff: (staffId: string) => Promise<void>;
 };
 
 export function SaleSetupPanel(props: Props) {
@@ -35,6 +43,12 @@ export function SaleSetupPanel(props: Props) {
     onTestAi,
     onSaveKey,
     onDeleteKey,
+    staff,
+    currentStaff,
+    canManageStaff,
+    staffStatus,
+    onAddStaff,
+    onDeleteStaff,
   } = props;
 
   return (
@@ -81,6 +95,17 @@ export function SaleSetupPanel(props: Props) {
         </div>
         {aiStatus ? <div className="setup-hint">{aiStatus}</div> : null}
       </div>
+
+      <div className="setup-divider" />
+
+      <StaffCookiePanel
+        staff={staff}
+        currentStaff={currentStaff}
+        canManage={canManageStaff}
+        status={staffStatus}
+        onAdd={onAddStaff}
+        onDelete={onDeleteStaff}
+      />
 
       <div className="setup-divider" />
 

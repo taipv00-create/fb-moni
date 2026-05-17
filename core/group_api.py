@@ -84,13 +84,58 @@ class FacebookGroupAPI:
         data = self._call('get', f'{GRAPH_URL}/me/accounts', params={'fields': 'id,name,access_token'})
         return data.get('data') if data else None
 
-    def post_comment(self, post_id: str, message: str, page_token: str = None) -> Optional[dict]:
+    def post_comment(self, post_id: str, message: str, page_token: str = None, attachment_url: str = '') -> Optional[dict]:
         token = page_token or self.access_token
+        params = {'access_token': token}
+        if message:
+            params['message'] = message
+        if attachment_url:
+            params['attachment_url'] = attachment_url
         resp = requests.post(
             f'{GRAPH_URL}/{post_id}/comments',
-            params={'access_token': token, 'message': message}
+            params=params
         )
         return resp.json()
+
+    def get_post_comments(self, post_id: str, limit: int = 500) -> Optional[dict]:
+        comments: List[Dict] = []
+        fields = 'id,message,from,created_time,attachment,comments.limit(50).summary(true){id,message,from,created_time,attachment}'
+        page_limit = min(max(limit, 1), 100)
+        data = self._call('get', f'{GRAPH_URL}/{post_id}/comments', params={
+            'fields': fields,
+            'limit': page_limit,
+            'summary': 'true',
+            'filter': 'stream',
+        })
+        if data is None:
+            return None
+
+        total_count = ((data.get('summary') or {}).get('total_count') or 0)
+        while data and len(comments) < limit:
+            for item in data.get('data') or []:
+                comments.append(item)
+                if len(comments) >= limit:
+                    break
+            next_url = ((data.get('paging') or {}).get('next') or '')
+            if not next_url or len(comments) >= limit:
+                break
+            try:
+                resp = requests.get(next_url, timeout=30)
+                data = resp.json()
+                if self._is_expired(data):
+                    import re
+                    new_token = refresh_token(self.cookie, self.token_file)
+                    if not new_token:
+                        break
+                    self.access_token = new_token
+                    next_url = re.sub(r'access_token=[^&]+', f'access_token={self.access_token}', next_url)
+                    resp = requests.get(next_url, timeout=30)
+                    data = resp.json()
+                if 'error' in data:
+                    break
+            except Exception:
+                break
+        return {'comments': comments[:limit], 'total_count': total_count or len(comments)}
 
     def resolve_slug(self, slug: str) -> Optional[dict]:
         data = self._call('get', f'{GRAPH_URL}/{slug}', params={'fields': 'id,name'})

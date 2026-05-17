@@ -16,6 +16,29 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .header-sub { font-size: 12px; opacity: .75; margin-top: 1px; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header-spacer { flex: 1; }
 .header-status { font-size: 12px; opacity: .8; white-space: nowrap; }
+.header-user { font-size: 12px; opacity: .9; white-space: nowrap; }
+.header-logout {
+  border: 1px solid rgba(255,255,255,.45);
+  background: rgba(255,255,255,.14);
+  color: white;
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.header-logout:hover { background: rgba(255,255,255,.24); }
+
+.auth-wrap { max-width: 440px; margin: 70px auto 0; padding: 0 14px; }
+.auth-card { background: white; border-radius: 14px; padding: 18px; box-shadow: 0 1px 10px rgba(0,0,0,.1); }
+.auth-title { font-size: 18px; font-weight: 800; margin-bottom: 5px; }
+.auth-sub { font-size: 13px; color: #65676b; margin-bottom: 14px; line-height: 1.4; }
+.auth-field { margin-bottom: 10px; }
+.auth-field label { display: block; font-size: 11px; font-weight: 700; color: #65676b; text-transform: uppercase; letter-spacing: .4px; margin-bottom: 5px; }
+.auth-field input, .auth-field textarea { width: 100%; border: 1.5px solid #e4e6eb; border-radius: 10px; padding: 9px 11px; font-size: 14px; font-family: inherit; outline: none; }
+.auth-field textarea { min-height: 88px; resize: vertical; }
+.auth-field input:focus, .auth-field textarea:focus { border-color: #1877f2; }
+.auth-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.auth-status { font-size: 12px; color: #65676b; margin-top: 10px; min-height: 16px; }
 
 .main { max-width: 700px; margin: 0 auto; padding: 16px 12px 40px; }
 
@@ -61,6 +84,32 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .setup-divider { height: 1px; background: #e4e6eb; margin: 12px 0; }
 .setup-hint { font-size: 12px; color: #65676b; width: 100%; }
 .ai-key-label { font-size: 12px; color: #65676b; white-space: nowrap; }
+.staff-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.staff-form input, .staff-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1.5px solid #e4e6eb;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.staff-form textarea { grid-column: 1 / -1; min-height: 72px; resize: vertical; }
+.staff-form button { justify-self: start; }
+.staff-list { display: flex; flex-direction: column; gap: 7px; }
+.staff-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid #e4e6eb;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.staff-main { min-width: 0; }
+.staff-name { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.staff-meta { font-size: 11px; color: #65676b; margin-top: 2px; word-break: break-word; }
+.staff-badge { font-size: 11px; color: #047857; background: #d1fae5; border-radius: 999px; padding: 1px 7px; }
 
 @media (max-width: 960px) {
   .workspace { grid-template-columns: 1fr; }
@@ -201,12 +250,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .comment-box.open { display: flex; }
 .comment-textarea { width: 100%; padding: 9px 13px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 13px; font-family: inherit; resize: none; min-height: 60px; outline: none; transition: border .15s; }
 .comment-textarea:focus { border-color: #1877f2; }
+.comment-image-input { width: 100%; padding: 8px 13px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 13px; font-family: inherit; outline: none; }
+.comment-image-input:focus { border-color: #1877f2; }
 .comment-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .comment-as { padding: 6px 10px; border-radius: 20px; border: 1.5px solid #e4e6eb; font-size: 12px; background: white; flex: 1; min-width: 130px; outline: none; cursor: pointer; }
 .btn-send { padding: 7px 18px; border-radius: 20px; border: none; background: #1877f2; color: white; font-size: 13px; font-weight: 600; cursor: pointer; }
 .btn-send:hover { background: #1464d8; }
 .btn-send:disabled { opacity: .5; cursor: not-allowed; }
 .comment-msg-result { font-size: 12px; color: #65676b; }
+.comment-summary-wrap { border-left: 3px solid #0ea5e9; }
+.summary-list { margin-top: 8px; }
+.summary-line { font-size: 12px; color: #374151; line-height: 1.45; padding: 3px 0; }
 
 .skeleton { background: white; border-radius: 14px; padding: 16px; box-shadow: 0 1px 6px rgba(0,0,0,.08); }
 .skel { background: linear-gradient(90deg, #e4e6eb 25%, #f0f2f5 50%, #e4e6eb 75%); background-size: 200% 100%; border-radius: 6px; animation: shimmer 1.4s infinite; }
